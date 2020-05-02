@@ -1,0 +1,3 @@
+[submodule "deps/stddoc.c"]
+	path = deps/stddoc.c
+	url = https://github.com/r-lyeh/stddoc.c
