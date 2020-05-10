@@ -1,0 +1,6 @@
+[ ] threadpool dispatcher per le casse
+[ ] cassa consumatore con variabile attiva o no
+[ ] cliente produttore
+[ ] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
+[ ] external config
+[X] handle signals in processes
