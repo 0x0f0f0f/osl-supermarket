@@ -1,11 +1,11 @@
 CC = clang
-CFLAGS = -Wall -g -std=gnu99
+CFLAGS = -Wall -g -std=gnu99 -D_POSIX_C_SOURCE=200809L
 LIBS = -lpthread -lm
 OPTFLAGS = -O3
 LDFLAGS = -L.
 INCLUDES = -I.
 TARGETS = manager supermarket
-OBJECTS =  
+OBJECTS = lqueue.o conc_lqueue.o linked_list.o
 
 .PHONY: all bin clean sanitize prod debug
 .SUFFIXES: .c .h
@@ -22,14 +22,17 @@ sanitize: debug
 
 # Add debug flags.
 debug: CFLAGS+=-g
-debug: LOGLEVEL+=-DLOG_LVL=LOG_LVL_DEBUG
+debug: LOGLEVEL+=-DLOG_LVL=LOG_LVL_NEVER
 debug: LOGLEVEL+=-DLOG_SYSCALL
 debug: clean all
 
 all: $(OBJECTS) $(TARGETS)
 
-%: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $(LOGLEVEL) $(LIBS) -o $@ $<
+manager: $(OBJECTS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $(LOGLEVEL) $(LIBS) -o $@ manager.c $(OBJECTS)
+
+supermarket: $(OBJECTS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $(LOGLEVEL) $(LIBS) -o $@ supermarket.c $(OBJECTS)
 	
 %.o: %.c %.h
 	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $(LOGLEVEL) $(LIBS) -c -o $@ $<

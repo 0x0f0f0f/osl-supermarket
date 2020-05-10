@@ -31,6 +31,7 @@ static char* logname(enum loglevel l) {
 #define LOG_WARNING(args...) LOG(LOG_LVL_WARNING, args)
 #define LOG_NOTICE(args...) LOG(LOG_LVL_NOTICE, args)
 #define LOG_DEBUG(args...) LOG(LOG_LVL_DEBUG, args)
+#define LOG_NEVER(args...) LOG(LOG_LVL_NEVER, args)
 
 #endif //logger_h_INCLUDED
 
