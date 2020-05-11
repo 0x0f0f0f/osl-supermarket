@@ -1,11 +1,9 @@
 #ifndef util_h_INCLUDED
 #define util_h_INCLUDED
 
-#include <time.h>
-#include <errno.h>    
 #include "logger.h"
 
-// ========== Logging Utilities ==========
+// ========== Miscellaneous Macros  ==========
 
 // Print to stderr
 #define ERR(...) { LOG_CRITICAL(__VA_ARGS__); }
@@ -13,6 +11,15 @@
 // Print an error and die
 #define ERR_DIE(...) { ERR(__VA_ARGS__);\
     exit(EXIT_FAILURE); }
+
+// Print an error, set var and goto a label
+#define ERR_SET_GOTO(lab, var, ...) {\
+    ERR(__VA_ARGS__); var = EXIT_FAILURE; goto lab;}
+
+// Use POSIX random because of a better distribution
+// than rand.
+#define RAND_RANGE(low, up) \
+    ((random() % (up - low + 1)) + low)
 
 // ========== System call utilities  ==========
 
@@ -89,6 +96,8 @@
     if((err = pthread_cond_wait(ev, m)) != 0) {\
     LOG_CRITICAL("error waiting condition %p\n", (void*) ev); return err;}\
     LOG_NEVER("COND VAR %p waiting\n", (void*)ev);}
+
+
         
 // ========== Synchronization macros that exit thread on fail  ==========
 
@@ -117,12 +126,11 @@
         ERR("error waiting for cond: %s\n", strerror(err)); pthread_exit((void*)&err);}\
     LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
 
-// ========== Miscellaneous functions ==========
+// ========== Miscellaneous Functions ==========
 
-// Good function to sleep for msec milliseconds and 
-// Resume when interrupted. Found here 
-// https://stackoverflow.com/q/1157209/7240056
-int msleep(long msec); 
+// From https://stackoverflow.com/q/1157209/7240056
+// Sleep for msec milliseconds and resume if interrupted
+// by a syscall
+int msleep(long msec);
 
 #endif // util_h_INCLUDED
-

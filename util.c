@@ -1,3 +1,5 @@
+#include <time.h>
+#include <errno.h>
 #include "util.h"
 
 int msleep(long msec) {

@@ -1,7 +1,5 @@
-#ifndef cashier_h_INCLUDED
-#define cashier_h_INCLUDED
-
-#include <unistd.h>
+#include <pthread.h>
+#include "cashier.h"
 
 #include "conc_lqueue.h"
 
@@ -14,11 +12,14 @@ typedef struct cashier_worker_opt_s {
     useconds_t start_time;
     useconds_t time_per_product;
     // Concurrent customer queue
-    conc_lqueue_t custqueue;
+    conc_lqueue_t *custqueue;
     // Outbound message queue
-    conc_lqueue_t outmsgqueue;
+    conc_lqueue_t *outmsgqueue;
     // Inbound message queue
 } cashier_worker_opt_t;
 
-#endif
-
+void* cashier_worker(void* arg) {
+    cashier_opt_t opt = *(cashier_opt_t *) arg;
+   
+    pthread_exit(NULL);
+}
