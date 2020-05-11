@@ -12,8 +12,6 @@
 #include "config.h"
 #include "util.h"
 
-#define MANAGER_POOL_SIZE 2
-
 // Contains options passed to the signal handler worker
 typedef struct signal_worker_opt_s {
     // Signal set to be handled
@@ -26,7 +24,10 @@ typedef struct signal_worker_opt_s {
 void* signal_worker (void* arg) {
     signal_worker_opt_t opt = *(signal_worker_opt_t*) arg;
     int err, signum;
-    // Manage SIGHUP, SIGQUIT and SIGINT.
+
+    if(pthread_sigmask(SIG_BLOCK, &opt.sigset, NULL) < 0)
+        ERR_DIE("Masking signals in connection thread");
+
     // Wait for the signals
     while(1) {
         SYSCALL(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
@@ -36,7 +37,11 @@ void* signal_worker (void* arg) {
         if (signum == SIGHUP || signum == SIGQUIT) {
             MTX_LOCK_DIE(opt.client_pids_mtx);
             for(int i = 0; i < MANAGER_POOL_SIZE; i++)
-                if(opt.client_pids[i] > 0) kill(opt.client_pids[i], signum);
+                if(opt.client_pids[i] > 0) {
+                    LOG_DEBUG("Killing process %d with signal %s\n",
+                        opt.client_pids[i], strsignal(signum));
+                    kill(opt.client_pids[i], signum);
+                }
             MTX_UNLOCK_DIE(opt.client_pids_mtx);
             exit(0);
         } else exit(0);
@@ -79,10 +84,10 @@ void* conn_worker(void* arg) {
     if(pthread_sigmask(SIG_BLOCK, &opt.sigset, NULL) < 0)
         ERR_DIE("Masking signals in connection thread");
 
-
     LOG_DEBUG("Worker %d socket connected\n", opt.id);
     while((nread = recv(opt.fd, msgbuf, MSG_SIZE, 0) > 0)) {
-        LOG_DEBUG("Worker %d fd %d received message: %s", opt.id, opt.fd, msgbuf);
+        LOG_DEBUG("Worker %d fd %d received message: %s",
+                    opt.id, opt.fd, msgbuf);
         if(strcmp(msgbuf, HELLO_BOSS) == 0) {
             LOG_DEBUG("Received connection request\n");
             // Read the supermarket process pid and store it in the array.
@@ -123,7 +128,7 @@ void* conn_worker(void* arg) {
     
 conn_worker_exit:
     MTX_LOCK_EXT(opt.count_mtx);
-    *(opt.running_count) = *(opt.running_count) + 1;
+    *(opt.running_count) = *(opt.running_count) - 1;
     COND_SIGNAL_EXT(opt.can_spawn_thread_event);
     MTX_UNLOCK_EXT(opt.count_mtx);
     // Negative pids are ignored when forwarding signals
@@ -152,34 +157,38 @@ int main(int argc, char const* argv[]) {
     SYSCALL(err, atexit(cleanup), "Registering cleanup handler at exit\n");
 
     // Initializing mutexes, conds and thread attributes
-    if(pthread_attr_init(&sig_attr) < 0) ERR_DIE("Initializing thread attributes\n");
-    if(pthread_mutex_init(&count_mtx, NULL) < 0) ERR_DIE("Allocating mutex\n");
-    if(pthread_mutex_init(&client_pids_mtx, NULL) < 0) ERR_DIE("Allocating mutex\n");
-    if(pthread_cond_init(&can_spawn_thread_event, NULL) < 0) ERR_DIE("Allocating mutex\n");
+    if(pthread_attr_init(&sig_attr) < 0)
+        ERR_DIE("Initializing thread attributes\n");
+    if(pthread_mutex_init(&count_mtx, NULL) < 0)
+        ERR_DIE("Allocating mutex\n");
+    if(pthread_mutex_init(&client_pids_mtx, NULL) < 0)
+        ERR_DIE("Allocating mutex\n");
+    if(pthread_cond_init(&can_spawn_thread_event, NULL) < 0)
+        ERR_DIE("Allocating cond var\n");
+
     for (int i = 0; i < MANAGER_POOL_SIZE; i++) {
         if((err = pthread_attr_init(&conn_attrs[i])) != 0)
             ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-        if((err = pthread_attr_setdetachstate(&conn_attrs[i], PTHREAD_CREATE_DETACHED)) != 0)
+        if((err = pthread_attr_setdetachstate(&conn_attrs[i],
+                                              PTHREAD_CREATE_DETACHED)) != 0)
             ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
     }
-
 
     // Create signal set
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGHUP);
     sigaddset(&sigset, SIGQUIT);
     sigaddset(&sigset, SIGINT);
+    if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) < 0)
+        ERR_DIE("Masking signals in main thread\n");
     // Spawnsignal handler thread
     signal_worker_opt_t signal_worker_opt = {
         sigset,
         client_pids,
         &client_pids_mtx,
     };
-    if(pthread_create(&sig_tid, &sig_attr,
-                      signal_worker, &signal_worker_opt) < 0 )
-        ERR_DIE("Creating signal handler thread\n");
-    if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) < 0)
-        ERR_DIE("Masking signals in main thread\n");
+    if(pthread_create(&sig_tid, &sig_attr, signal_worker, &signal_worker_opt) 
+        < 0 ) ERR_DIE("Creating signal handler thread\n");
 
     // Init unix socket
     memset(&addr, 0, sizeof(addr));
@@ -190,9 +199,6 @@ int main(int argc, char const* argv[]) {
     SYSCALL(err, bind(sock_fd, (struct sockaddr*) &addr, sizeof(addr)),
         "Binding socket\n");
     SYSCALL(err, listen(sock_fd, MANAGER_POOL_SIZE), "Listening on socket\n");
-
-
-
 
     while (1) {
         MTX_LOCK_DIE(&count_mtx);
@@ -210,9 +216,13 @@ int main(int argc, char const* argv[]) {
             &statuses[c_thr],
             client_pids,
             &client_pids_mtx,
-            &sigset
+            sigset,
+            &running_count,
+            &count_mtx,
+            &can_spawn_thread_event
         };
-        err = pthread_create(&conn_tid[c_thr], &conn_attrs[c_thr], conn_worker, &opt);
+        err = pthread_create(&conn_tid[c_thr], &conn_attrs[c_thr],
+                             conn_worker, &opt);
         if(err != 0) ERR_DIE("Spawning thread: %s", strerror(err));
         c_thr = (c_thr + 1) % MANAGER_POOL_SIZE;
     }

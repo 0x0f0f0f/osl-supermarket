@@ -16,10 +16,10 @@ int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val) {
         MTX_UNLOCK_RET(cq->mutex);
         return err;
     }
-    LOG_DEBUG("successfuly put element %p\n", (void*) val);
+    LOG_NEVER("successfuly put element %p\n", (void*) val);
     COND_SIGNAL_RET(cq->produce_event);
     MTX_UNLOCK_RET(cq->mutex);
-    LOG_DEBUG("unlocked after enqueue\n");
+    LOG_NEVER("unlocked after enqueue\n");
     return err;
 }
 

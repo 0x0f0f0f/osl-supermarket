@@ -1,7 +1,11 @@
 #ifndef util_h_INCLUDED
 #define util_h_INCLUDED
 
+#include <time.h>
+#include <errno.h>    
 #include "logger.h"
+
+// ========== Logging Utilities ==========
 
 // Print to stderr
 #define ERR(...) { LOG_CRITICAL(__VA_ARGS__); }
@@ -85,8 +89,6 @@
     if((err = pthread_cond_wait(ev, m)) != 0) {\
     LOG_CRITICAL("error waiting condition %p\n", (void*) ev); return err;}\
     LOG_NEVER("COND VAR %p waiting\n", (void*)ev);}
-
-
         
 // ========== Synchronization macros that exit thread on fail  ==========
 
@@ -114,6 +116,13 @@
     { int err = 0; if((err = pthread_cond_wait(ev, mtx)) != 0) {\
         ERR("error waiting for cond: %s\n", strerror(err)); pthread_exit((void*)&err);}\
     LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
+
+// ========== Miscellaneous functions ==========
+
+// Good function to sleep for msec milliseconds and 
+// Resume when interrupted. Found here 
+// https://stackoverflow.com/q/1157209/7240056
+int msleep(long msec); 
 
 #endif // util_h_INCLUDED
 

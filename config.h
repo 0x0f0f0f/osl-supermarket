@@ -1,6 +1,8 @@
 #ifndef config_h_INCLUDED
 #define config_h_INCLUDED
 
+// ========== Parameters  ==========
+
 // Maximum size of UNIX socket path
 #define UNIX_MAX_PATH 108
 
@@ -32,12 +34,29 @@
 #define PRODUCT_CAP 80
 #endif
 
-// Polling time for cashier scheduling algorithm
+// Polling time for cashier scheduling algorithm (S)
 #ifndef SCHED_POLL_TIME
 #define SCHED_POLL_TIME 30
 #endif
 
+// Maximum connections to be accepted by the manager process
+#ifndef MANAGER_POOL_SIZE
+#define MANAGER_POOL_SIZE 2
+#endif 
+
+// Maximum connection attempts (supermarket process)
+#ifndef MAX_CONN_ATTEMPTS 
+#define MAX_CONN_ATTEMPTS 10
+#endif
+
+// Delay in seconds between each connection attempt
+// TODO move to milliseconds
+#ifndef CONN_ATTEMPT_DELAY 
+#define CONN_ATTEMPT_DELAY 500
+#endif
+
 // ========== IPC-protocol messages ==========
+
 // Messages have a fixed size. Should be zero padded and NULL terminated.
 #define MSG_SIZE 512
 // Must be followed by the ID of the cashier ended by newline

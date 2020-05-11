@@ -6,7 +6,7 @@
 
 int lqueue_enqueue(lqueue_t* q, void* el) {
     int err = 0;
-    LOG_DEBUG("Enqueueing %p in %p\n", el, (void*) q);
+    LOG_NEVER("Enqueueing %p in %p\n", el, (void*) q);
     if(LQUEUE_CLOSED(q)) {
         LOG_DEBUG("queue %p was closed in enqueue", (void*) q);
         return -2;

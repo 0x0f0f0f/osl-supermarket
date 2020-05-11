@@ -5,7 +5,8 @@ OPTFLAGS = -O3
 LDFLAGS = -L.
 INCLUDES = -I.
 TARGETS = manager supermarket
-OBJECTS = lqueue.o conc_lqueue.o linked_list.o
+OBJECTS = lqueue.o conc_lqueue.o linked_list.o util.o
+TEXCC = tectonic
 
 .PHONY: all bin clean sanitize prod debug
 .SUFFIXES: .c .h
@@ -20,9 +21,14 @@ prod: all
 sanitize: CFLAGS+=-fno-omit-frame-pointer -fsanitize=thread
 sanitize: debug
 
+never: CFLAGS+=-g
+never: LOGLEVEL+=-DLOG_SYSCALL
+never: LOGLEVEL=-DLOG_LVL=LOG_LVL_NEVER
+never: clean all
+
 # Add debug flags.
 debug: CFLAGS+=-g
-debug: LOGLEVEL+=-DLOG_LVL=LOG_LVL_NEVER
+debug: LOGLEVEL+=-DLOG_LVL=LOG_LVL_DEBUG
 debug: LOGLEVEL+=-DLOG_SYSCALL
 debug: clean all
 
@@ -45,4 +51,7 @@ test1:
 
 test2:
 	echo hello
+
+report:
+	$(TEXCC) report.tex
 	

@@ -4,3 +4,6 @@
 [ ] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
 [ ] external config
 [X] handle signals in processes
+[ ] message worker in supermarket
+[ ] No leaks in supermarket
+[ ] 
