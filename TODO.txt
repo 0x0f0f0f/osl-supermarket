@@ -7,3 +7,4 @@
 [ ] message worker in supermarket
 [ ] No leaks in supermarket
 [ ] analysis script
+[ ] Termina manager come supermarket

@@ -49,10 +49,32 @@
 #define MAX_CONN_ATTEMPTS 10
 #endif
 
-// Delay in seconds between each connection attempt
-// TODO move to milliseconds
+// Delay in milliseconds between each connection attempt
 #ifndef CONN_ATTEMPT_DELAY 
 #define CONN_ATTEMPT_DELAY 500
+#endif
+
+// Number customers enqueued to a single cashier
+// necessary to open a cashier (S2)
+#ifndef UNDERCROWDED_CASH_TRESHOLD
+#define UNDERCROWDED_CASH_TRESHOLD 2
+#endif
+
+// Number of cashiers with <= 1 customers enqueued
+// necessary to close a cashier (S1)
+#ifndef OVERCROWDED_CASH_TRESHOLD
+#define OVERCROWDED_CASH_TRESHOLD 10
+#endif
+
+// Regular time interval when cashier queue size is polled
+// and sent to manager
+#ifndef CASHIER_POLL_TIME
+#define CASHIER_POLL_TIME 80
+#endif
+
+// Time required for the processing of a product
+#ifndef TIME_PER_PROD 
+#define TIME_PER_PROD 4
 #endif
 
 // ========== IPC-protocol messages ==========

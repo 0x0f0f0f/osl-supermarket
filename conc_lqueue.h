@@ -29,6 +29,9 @@ int conc_lqueue_closed(conc_lqueue_t* cq);
 /* Close a concurrent queue */
 int conc_lqueue_close(conc_lqueue_t* cq);
 
+/* Get the number of elements enqueued */
+long conc_lqueue_getsize(conc_lqueue_t* cq);
+
 /* Returns NULL on failure */
 conc_lqueue_t* conc_lqueue_init();
 

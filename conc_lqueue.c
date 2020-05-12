@@ -79,6 +79,25 @@ conc_lqueue_t* conc_lqueue_init() {
     return cq;
 }
 
+long conc_lqueue_getsize(conc_lqueue_t* cq) {
+    long len = -1;
+    if (cq == NULL) return len;
+    if(pthread_mutex_lock(cq->mutex) != 0) {
+        LOG_CRITICAL("error locking mutex %p\n", (void*) cq->mutex);
+        return len;
+    }
+    LOG_NEVER("MUTEX %p locked\n", (void*)cq->mutex);
+        return len;
+    len = cq->q->count;
+    if(pthread_mutex_lock(cq->mutex) != 0) {
+        LOG_CRITICAL("error locking mutex %p\n", (void*) cq->mutex);
+        return len;
+    }
+    LOG_NEVER("MUTEX %p locked\n", (void*)cq->mutex);
+    return len;
+}
+
+
 void conc_lqueue_destroy(conc_lqueue_t* cq) {
     if (cq == NULL) return;
     if(cq->mutex) pthread_mutex_destroy(cq->mutex);

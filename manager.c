@@ -85,7 +85,7 @@ void* conn_worker(void* arg) {
         ERR_DIE("Masking signals in connection thread");
 
     LOG_DEBUG("Worker %d socket connected\n", opt.id);
-    while((nread = recv(opt.fd, msgbuf, MSG_SIZE, 0) > 0)) {
+    while((nread = readn(opt.fd, msgbuf, MSG_SIZE) > 0)) {
         LOG_DEBUG("Worker %d fd %d received message: %s",
                     opt.id, opt.fd, msgbuf);
         if(strcmp(msgbuf, HELLO_BOSS) == 0) {
@@ -93,7 +93,7 @@ void* conn_worker(void* arg) {
             // Read the supermarket process pid and store it in the array.
             // It is needed to forward signals.
             memset(msgbuf, 0, MSG_SIZE);
-            if((nread = recv(opt.fd, msgbuf, MSG_SIZE, 0)) > 0) {
+            if((nread = readn(opt.fd, msgbuf, MSG_SIZE)) > 0) {
                 // Expect the process PID
                 pid_t pid = (pid_t) strtol(msgbuf, NULL, 10);
                 if (pid <= 0) {

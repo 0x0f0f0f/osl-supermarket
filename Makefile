@@ -5,7 +5,7 @@ OPTFLAGS = -O3
 LDFLAGS = -L.
 INCLUDES = -I.
 TARGETS = manager supermarket
-OBJECTS = lqueue.o conc_lqueue.o linked_list.o util.o
+OBJECTS = lqueue.o conc_lqueue.o linked_list.o util.o cashcust.o
 TEXCC = tectonic
 
 .PHONY: all bin clean sanitize prod debug

@@ -13,6 +13,7 @@
 #include "config.h"
 #include "util.h"
 #include "conc_lqueue.h"
+#include "cashcust.h"
 
 static volatile char should_quit = 0;
 
@@ -68,11 +69,11 @@ void* outmsg_worker(void* arg) {
 
     memset(msgbuf, 0, MSG_SIZE);
     strncpy(msgbuf, HELLO_BOSS, MSG_SIZE);
-    SYSCALL(sent, send(opt.sock_fd, msgbuf, MSG_SIZE, 0), "sending header\n");
+    SYSCALL(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE), "sending header\n");
     memset(msgbuf, 0, MSG_SIZE);
     snprintf(msgbuf, MSG_SIZE, "%d\n", getpid());
     
-    SYSCALL(sent, send(opt.sock_fd, msgbuf, MSG_SIZE, 0), "sending pid\n");
+    SYSCALL(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE), "sending pid\n");
     free(msgbuf);
 
     // Pop messages from queue and send them
@@ -80,7 +81,7 @@ void* outmsg_worker(void* arg) {
         if(should_quit) { goto outmsg_worker_exit; };
         if(conc_lqueue_closed(opt.msgqueue)) { goto outmsg_worker_exit; };
         LOG_DEBUG("Sending message: %s\n", msgbuf);
-        SYSCALL(sent, send(opt.sock_fd, msgbuf, MSG_SIZE, 0),
+        SYSCALL(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE),
             "sending message\n");
         free(msgbuf);
     }
@@ -102,7 +103,7 @@ void* inmsg_worker(void* arg) {
         goto inmsg_worker_exit;
     }
 
-    while((received = recv(opt.sock_fd, statbuf, MSG_SIZE, 0)) > 0) {
+    while((received = readn(opt.sock_fd, statbuf, MSG_SIZE)) > 0) {
         if(should_quit) goto inmsg_worker_exit;
         if(conc_lqueue_closed(opt.msgqueue)) goto inmsg_worker_exit;
         LOG_DEBUG("Received message: %s\n", statbuf);
@@ -128,26 +129,30 @@ int main(int argc, char const* argv[]) {
     conc_lqueue_t *outmsgqueue = NULL, *inmsgqueue = NULL;
     struct sockaddr_un addr;
 
+    pthread_t *customer_tid_arr = NULL;
+    pthread_attr_t *customer_attr_arr = NULL;
+    customer_opt_t *customer_opt_arr = NULL;
+    
     // ========== Parse configuration file ==========
     // TODO parse configuration file
 
     // ========== Data initialization ==========
 
     if(pthread_attr_init(&sig_attr) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Initializing thread attributes\n");
+        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
     if(pthread_attr_setdetachstate(&sig_attr, PTHREAD_CREATE_DETACHED) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Initializing thread attributes\n");
+        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
     if(pthread_attr_init(&outmsg_attr) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Initializing thread attributes\n");
+        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
     if(pthread_attr_init(&inmsg_attr) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Initializing thread attributes\n");
+        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
 
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGHUP);
     sigaddset(&sigset, SIGQUIT);
     sigaddset(&sigset, SIGINT);
     if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Masking signals in main thread\n");
+        ERR_SET_GOTO(main_exit_1, err, "Masking signals in main thread\n");
 
     outmsgqueue = conc_lqueue_init();
     inmsgqueue = conc_lqueue_init();
@@ -159,7 +164,7 @@ int main(int argc, char const* argv[]) {
     };
     if(pthread_create(&sig_tid, &sig_attr,
                       signal_worker, &signal_worker_opt) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Creating signal handler thread\n");
+        ERR_SET_GOTO(main_exit_1, err, "Creating signal handler thread\n");
 
     // ========== Connect to server process  ==========
     
@@ -169,10 +174,10 @@ int main(int argc, char const* argv[]) {
     strncpy(addr.sun_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH);
         SYSCALL(sock_fd, socket(AF_UNIX, SOCK_STREAM, 0), "creating socket\n");
     while(connect(sock_fd, (struct sockaddr*) &addr, sizeof(addr)) < 0) {
-        if(should_quit) { goto main_exit_2; };
+        if(should_quit) { goto main_exit_1; };
         LOG_CRITICAL("Error connecting to server: %s\n", strerror(errno));
         if(conn_attempt_count >= MAX_CONN_ATTEMPTS) {
-            ERR_SET_GOTO(main_exit_2, err, "Max number of attempts exceeded\n");
+            ERR_SET_GOTO(main_exit_1, err, "Max number of attempts exceeded\n");
         }
         conn_attempt_count++;
         msleep(CONN_ATTEMPT_DELAY);
@@ -192,7 +197,7 @@ int main(int argc, char const* argv[]) {
     };
     if(pthread_create(&outmsg_tid, &outmsg_attr,
                       outmsg_worker, &outmsg_opt) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Creating outbound msg worker\n");
+        ERR_SET_GOTO(main_exit_1, err, "Creating outbound msg worker\n");
     
     msg_worker_opt_t inmsg_opt = {
         sigset,
@@ -200,15 +205,27 @@ int main(int argc, char const* argv[]) {
         inmsgqueue,
     };
     if(pthread_create(&inmsg_tid, &inmsg_attr, inmsg_worker, &inmsg_opt) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Creating inbound msg worker\n");
+        ERR_SET_GOTO(main_exit_1, err, "Creating inbound msg worker\n");
 
     // ========== Creating first customers ==========
     // TODO create CUST_CAP customer threads (C)
+    if (CUST_CAP <= 1)
+        ERR_SET_GOTO(main_exit_2, err, "Customer cap cannot be negative\n");
+
+    customer_opt_arr = malloc(sizeof(customer_opt_t) * CUST_CAP);
+    for(int i = 0; i < CUST_CAP; i++) {
+        
+
+        
+        if(pthread_create(&customer_tid_arr[i], &customer_attr_arr[i], 
+                          customer_worker, &customer_opt_arr[i]) < 0)
+            ERR_SET_GOTO(main_exit_2, err, "Creating customer worker\n");
+    }
 
     // ========== Main loop ==========
 
     while(1) {
-        if(should_quit) goto main_exit_quit;
+        if(should_quit) goto main_exit_2;
         msgbuf = malloc(MSG_SIZE);
         memset(msgbuf, 0, MSG_SIZE);
         snprintf(msgbuf, MSG_SIZE, "hello world %d!\n", rand());
@@ -218,7 +235,7 @@ int main(int argc, char const* argv[]) {
 
     // ========== Cleanup  ==========
 
-    main_exit_quit:
+    main_exit_2:
             LOG_NOTICE("Exiting gracefully \n");
             LOG_DEBUG("Closing message queue\n");
             conc_lqueue_close(outmsgqueue);
@@ -228,7 +245,7 @@ int main(int argc, char const* argv[]) {
             pthread_join(inmsg_tid, NULL);
             // LOG_DEBUG("Closing file descriptors\n");
             // close(sock_fd);
-    main_exit_2:
+    main_exit_1:
             LOG_DEBUG("Final cleanups... \n");
             conc_lqueue_destroy(outmsgqueue);
             conc_lqueue_destroy(inmsgqueue);

@@ -1,6 +1,7 @@
 #ifndef util_h_INCLUDED
 #define util_h_INCLUDED
 
+#include <stdlib.h>
 #include "logger.h"
 
 // ========== Miscellaneous Macros  ==========
@@ -132,5 +133,15 @@
 // Sleep for msec milliseconds and resume if interrupted
 // by a syscall
 int msleep(long msec);
+
+// Wrappers to read and write to avoid "short" operations
+// From "Advanced Programming In the UNIX Environment" 
+
+ssize_t  /* Read "n" bytes from a descriptor */
+readn(int fd, void *ptr, size_t n);
+
+
+ssize_t  /* Write "n" bytes to a descriptor */
+writen(int fd, void *ptr, size_t n);
 
 #endif // util_h_INCLUDED
