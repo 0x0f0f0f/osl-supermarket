@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 #include <errno.h>
 #include "util.h"
 
@@ -17,8 +18,6 @@ int msleep(long msec) {
     return res;
 }
 
-// ========== wrappers to read and write to avoid "short" operations ==========
-// From "Advanced Programming In the UNIX Environment" 
 
 ssize_t  /* Read "n" bytes from a descriptor */
 readn(int fd, void *ptr, size_t n) {  

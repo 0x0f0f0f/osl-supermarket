@@ -20,7 +20,7 @@
 // Use POSIX random because of a better distribution
 // than rand.
 #define RAND_RANGE(low, up) \
-    ((random() % (up - low + 1)) + low)
+    ((rand() % (up - low + 1)) + low)
 
 // ========== System call utilities  ==========
 

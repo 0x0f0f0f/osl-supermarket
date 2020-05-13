@@ -15,6 +15,7 @@
 #include "conc_lqueue.h"
 #include "cashcust.h"
 
+static pthread_mutex_t flags_mtx = PTHREAD_MUTEX_INITIALIZER;
 static volatile char should_quit = 0;
 
 // ========== Signal Handler Worker ==========
@@ -38,7 +39,9 @@ void* signal_worker(void* arg) {
         // TODO if (signum == SIGHUP) signal other threads to quit gently;
         // else if (signum == SIGQUIT) exit brutally (?)
         // exit(0);
+        MTX_LOCK_DIE(&flags_mtx);
         should_quit = 1;
+        MTX_UNLOCK_DIE(&flags_mtx);
         pthread_exit(NULL);
    }
    exit(EXIT_FAILURE);
@@ -78,7 +81,10 @@ void* outmsg_worker(void* arg) {
 
     // Pop messages from queue and send them
     while(conc_lqueue_dequeue(opt.msgqueue, (void *) &msgbuf) == 0) {
+        MTX_LOCK_DIE(&flags_mtx);
         if(should_quit) { goto outmsg_worker_exit; };
+        MTX_UNLOCK_DIE(&flags_mtx);
+
         if(conc_lqueue_closed(opt.msgqueue)) { goto outmsg_worker_exit; };
         LOG_DEBUG("Sending message: %s\n", msgbuf);
         SYSCALL(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE),
@@ -104,7 +110,10 @@ void* inmsg_worker(void* arg) {
     }
 
     while((received = readn(opt.sock_fd, statbuf, MSG_SIZE)) > 0) {
-        if(should_quit) goto inmsg_worker_exit;
+        MTX_LOCK_DIE(&flags_mtx);
+        if(should_quit) { goto inmsg_worker_exit; };
+        MTX_UNLOCK_DIE(&flags_mtx);
+
         if(conc_lqueue_closed(opt.msgqueue)) goto inmsg_worker_exit;
         LOG_DEBUG("Received message: %s\n", statbuf);
         msgbuf = malloc(MSG_SIZE);
@@ -121,7 +130,8 @@ inmsg_worker_exit:
 // ========== Main Thread ==========
 
 int main(int argc, char const* argv[]) {
-    int sock_fd, sock_flags = 0, conn_attempt_count = 0, err = 0;
+    int sock_fd, sock_flags = 0, conn_attempt_count = 0, err = 0,
+        customer_count = 0;
     pthread_t sig_tid, outmsg_tid, inmsg_tid;
     pthread_attr_t sig_attr, outmsg_attr, inmsg_attr;
     sigset_t sigset;
@@ -132,7 +142,12 @@ int main(int argc, char const* argv[]) {
     pthread_t *customer_tid_arr = NULL;
     pthread_attr_t *customer_attr_arr = NULL;
     customer_opt_t *customer_opt_arr = NULL;
-    
+
+    pthread_t *cashier_tid_arr = NULL;
+    pthread_attr_t *cashier_attr_arr = NULL;
+    cashier_opt_t *cashier_opt_arr = NULL;
+
+    pthread_mutex_t customer_count_mtx;
     // ========== Parse configuration file ==========
     // TODO parse configuration file
 
@@ -207,15 +222,39 @@ int main(int argc, char const* argv[]) {
     if(pthread_create(&inmsg_tid, &inmsg_attr, inmsg_worker, &inmsg_opt) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Creating inbound msg worker\n");
 
+    // ========== Creating cashiers. Only 1 is open at startup  ==========
+
+    if (NUM_CASHIERS <= 1) 
+        ERR_SET_GOTO(main_exit_2, err, "NUM_CASHIERS must be >= 0\n");
+    cashier_tid_arr = malloc(sizeof(pthread_t) * CUST_CAP);
+    cashier_attr_arr = malloc(sizeof(pthread_attr_t) * CUST_CAP);
+    cashier_opt_arr = malloc(sizeof(cashier_opt_t) * CUST_CAP);
+    for(int i = 0; i < CUST_CAP; i++) {
+        pthread_attr_init(&cashier_attr_arr[i]);
+        cashier_init(&cashier_opt_arr[i], i, outmsgqueue);
+        if (i == 0) *(cashier_opt_arr[i].state) = OPEN;
+        if(pthread_create(&cashier_tid_arr[i], &cashier_attr_arr[i], 
+                          cashier_worker, &cashier_opt_arr[i]) < 0)
+            ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
+    }
+
+
     // ========== Creating first customers ==========
     // TODO create CUST_CAP customer threads (C)
     if (CUST_CAP <= 1)
-        ERR_SET_GOTO(main_exit_2, err, "Customer cap cannot be negative\n");
+        ERR_SET_GOTO(main_exit_2, err, "CUST_CAP must be >= 0\n");
 
+    if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0)
+        ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", strerror(err));
+
+    customer_tid_arr = malloc(sizeof(pthread_t) * CUST_CAP);
+    customer_attr_arr = malloc(sizeof(pthread_attr_t) * CUST_CAP);
     customer_opt_arr = malloc(sizeof(customer_opt_t) * CUST_CAP);
     for(int i = 0; i < CUST_CAP; i++) {
-        
+        pthread_attr_init(&customer_attr_arr[i]);
 
+        customer_init(&customer_opt_arr[i], i, &customer_count,
+                      &customer_count_mtx, cashier_opt_arr);
         
         if(pthread_create(&customer_tid_arr[i], &customer_attr_arr[i], 
                           customer_worker, &customer_opt_arr[i]) < 0)
@@ -229,7 +268,7 @@ int main(int argc, char const* argv[]) {
         msgbuf = malloc(MSG_SIZE);
         memset(msgbuf, 0, MSG_SIZE);
         snprintf(msgbuf, MSG_SIZE, "hello world %d!\n", rand());
-        conc_lqueue_enqueue(outmsgqueue, msgbuf);
+        // conc_lqueue_enqueue(outmsgqueue, msgbuf);
         msleep(3000);
     }
 

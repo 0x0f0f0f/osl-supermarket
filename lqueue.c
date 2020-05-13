@@ -8,7 +8,7 @@ int lqueue_enqueue(lqueue_t* q, void* el) {
     int err = 0;
     LOG_NEVER("Enqueueing %p in %p\n", el, (void*) q);
     if(LQUEUE_CLOSED(q)) {
-        LOG_DEBUG("queue %p was closed in enqueue", (void*) q);
+        LOG_NEVER("queue %p was closed in enqueue", (void*) q);
         return -2;
     }
     q->count++;
@@ -23,7 +23,7 @@ int lqueue_enqueue(lqueue_t* q, void* el) {
 
 int lqueue_dequeue(lqueue_t* q, void** val) {
     if(LQUEUE_EMPTY(q)) {
-        LOG_DEBUG("queue %p is empty in dequeue\n", (void*)q);
+        LOG_NEVER("queue %p is empty in dequeue\n", (void*)q);
         return -1;
     }
     *val = (q->head)->val;

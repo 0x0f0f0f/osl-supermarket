@@ -12,14 +12,14 @@ int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val) {
     MTX_LOCK_RET(cq->mutex);
     if((err = lqueue_enqueue(cq->q, val)) != 0) {
         /* Could not enqueue */
-        LOG_DEBUG("error in concurrent enqueue %p: %d\n", (void*) cq, err);
+        LOG_NEVER("error in concurrent enqueue %p: %d\n", (void*) cq, err);
         MTX_UNLOCK_RET(cq->mutex);
         return err;
     }
-    LOG_DEBUG("successfuly put element %p\n", (void*) val);
+    LOG_NEVER("successfuly put element %p\n", (void*) val);
     COND_SIGNAL_RET(cq->produce_event);
     MTX_UNLOCK_RET(cq->mutex);
-    LOG_DEBUG("unlocked after enqueue\n");
+    LOG_NEVER("unlocked after enqueue\n");
     return err;
 }
 
@@ -29,7 +29,7 @@ int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
     while((err = lqueue_dequeue(cq->q, val)) < 0) {
         /* Queue is empty, wait for value or check if closed */
         if(LQUEUE_CLOSED(cq->q)) {
-            LOG_DEBUG("buf %p was closed\n", (void*) cq);
+            LOG_NEVER("buf %p was closed\n", (void*) cq);
             MTX_UNLOCK_RET(cq->mutex);
             return ELQUEUECLOSED;
         } else if(err != -1) {
@@ -42,7 +42,7 @@ int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
     }
     MTX_UNLOCK_RET(cq->mutex);
 
-    LOG_DEBUG("successfully popped element %p\n", *val);
+    LOG_NEVER("successfully popped element %p\n", *val);
     return err;
 }
 
@@ -69,8 +69,10 @@ conc_lqueue_t* conc_lqueue_init() {
     conc_lqueue_t* cq = malloc(sizeof(conc_lqueue_t));
     if(cq == NULL) return cq;
     cq->q = lqueue_init();
-    if(cq->q == NULL) return NULL;
-
+    if(cq->q == NULL) {
+        free(cq);
+        return NULL;
+    } 
     cq->mutex = malloc(sizeof(pthread_mutex_t));
     cq->produce_event = malloc(sizeof(pthread_cond_t));
     pthread_mutex_init(cq->mutex, NULL);
@@ -87,10 +89,9 @@ long conc_lqueue_getsize(conc_lqueue_t* cq) {
         return len;
     }
     LOG_NEVER("MUTEX %p locked\n", (void*)cq->mutex);
-        return len;
     len = cq->q->count;
-    if(pthread_mutex_lock(cq->mutex) != 0) {
-        LOG_CRITICAL("error locking mutex %p\n", (void*) cq->mutex);
+    if(pthread_mutex_unlock(cq->mutex) != 0) {
+        LOG_CRITICAL("error unlocking mutex %p\n", (void*) cq->mutex);
         return len;
     }
     LOG_NEVER("MUTEX %p locked\n", (void*)cq->mutex);

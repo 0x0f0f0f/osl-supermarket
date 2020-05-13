@@ -1,10 +1,14 @@
-[ ] threadpool dispatcher per le casse
-[ ] cassa consumatore con variabile attiva o no
+[?] threadpool dispatcher per le casse
+[X] cassa consumatore con variabile attiva o no
 [ ] cliente produttore su coda cassiere
 [ ] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
 [ ] external config
 [X] handle signals in processes
-[ ] message worker in supermarket
+[X] message worker in supermarket
 [ ] No leaks in supermarket
 [ ] analysis script
-[ ] Termina manager come supermarket
+[ ] Log stats
+[ ] Termina manager come supermarket con var globale
+[X] Poll time in cashier threads to send num of enqueued custs to manager 
+[ ] Handle cashier and customer messages in manager (use strncomp to get header) 
+[ ] Keep an array of numbers of enqueued customers for each cashier in the manager

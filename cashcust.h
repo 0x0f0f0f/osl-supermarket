@@ -9,7 +9,8 @@
 
 typedef enum {
     CLOSED,
-    OPEN
+    OPEN,
+    SHUTDOWN
 } cashier_state_t;
 
 // Data type for cashier thread.
@@ -19,8 +20,6 @@ typedef struct cashier_opt_s {
     conc_lqueue_t *custqueue;
     // Outbound message queue
     conc_lqueue_t *outmsgqueue;
-    // Inbound message queue
-    conc_lqueue_t *inmsgqueue;
     // Cashier state 
     cashier_state_t *state;
     pthread_mutex_t *state_mtx;
@@ -57,13 +56,16 @@ typedef struct customer_opt_s {
     int *customer_count;
     pthread_mutex_t *customer_count_mtx;
     // Array of cashiers to choose where to enqueue the customer
-    cashier_opt_t *cashier_queue_arr;
+    cashier_opt_t *cashier_arr;
 } customer_opt_t;
 
 // ========== Worker Function Declarations ==========
 
 void* cashier_worker(void* arg);
 void* customer_worker(void* arg);
-
+void customer_init(customer_opt_t *c, int id, int *customer_count,
+                   pthread_mutex_t *customer_count_mtx,
+                   cashier_opt_t *cashier_arr);
+void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq);
 #endif // customer_h_INCLUDED
 
