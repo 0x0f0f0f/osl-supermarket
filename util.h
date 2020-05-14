@@ -22,6 +22,14 @@
 #define RAND_RANGE(low, up) \
     ((rand() % (up - low + 1)) + low)
 
+// Check if a shared flag is set, if so goto a local label
+#define CHECK_FLAG_GOTO(flag, mtx, lab) {\
+    MTX_LOCK_DIE(mtx);\
+    if(flag) {\
+        MTX_UNLOCK_DIE(mtx);\
+        goto lab;}\
+    MTX_UNLOCK_DIE(mtx);}
+
 // ========== System call utilities  ==========
 
 // Whether to log or not syscalls
@@ -53,17 +61,17 @@
 #define COND_SIGNAL_DIE(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
         ERR("error signaling cond: %s\n", strerror(err)); exit(err);\
-    } LOG_NEVER("COND VAR %p signaled\n", (void*)mtx);}
+    } LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
 
 #define COND_BROADCAST_DIE(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
         ERR("error signaling cond: %s\n", strerror(err)); exit(err);\
-    } LOG_NEVER("COND VAR %p broadcasted\n", (void*)mtx);}
+    } LOG_NEVER("COND VAR %p broadcasted\n", (void*)ev);}
 
 #define COND_WAIT_DIE(event, mtx) \
     { int err = 0; if((err = pthread_cond_wait(event, mtx)) != 0) {\
         ERR("error waiting for cond: %s\n", strerror(err)); exit(err);\
-    } LOG_NEVER("COND VAR %p waiting\n", (void*)mtx);}
+    } LOG_NEVER("COND VAR %p waiting\n", (void*)event);}
 
 
 // ========== Synchronization macros that return instead of dying  ==========

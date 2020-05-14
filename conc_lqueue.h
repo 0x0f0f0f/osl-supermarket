@@ -12,6 +12,7 @@ typedef struct __conc_lqueue {
 
 /* Error code for closed buffer */
 #define ELQUEUECLOSED -666
+#define ELQUEUEEMPTY -667
 
 #define CONC_LQUEUE_ASSERT_EXISTS(q) if(q == NULL) \
     {ERR_DIE("expected a queue to be allocated: %p\n", (void*) q);}
@@ -22,6 +23,9 @@ int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val);
 
 /* Get an item from the queue doing appropriate locking and signaling */
 int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val);
+
+/* Get an item from the queue but do not wait if empty */
+int conc_lqueue_dequeue_nonblock(conc_lqueue_t* cq, void** val);
 
 /* Is a concurrent queue closed? */
 int conc_lqueue_closed(conc_lqueue_t* cq);

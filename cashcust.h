@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <pthread.h> 
+#include <stdbool.h>
 #include "conc_lqueue.h"
 
 // ========== Cashier Data Types ==========
@@ -55,6 +56,7 @@ typedef struct customer_opt_s {
     // Number of customers in the supermarket
     int *customer_count;
     pthread_mutex_t *customer_count_mtx;
+    bool *customer_terminated;
     // Array of cashiers to choose where to enqueue the customer
     cashier_opt_t *cashier_arr;
 } customer_opt_t;
@@ -63,9 +65,14 @@ typedef struct customer_opt_s {
 
 void* cashier_worker(void* arg);
 void* customer_worker(void* arg);
+void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq);
 void customer_init(customer_opt_t *c, int id, int *customer_count,
                    pthread_mutex_t *customer_count_mtx,
-                   cashier_opt_t *cashier_arr);
-void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq);
+                   cashier_opt_t *cashier_arr,
+                   bool *customer_terminated);
+
+void cashier_destroy(cashier_opt_t *c);
+void customer_destroy(customer_opt_t *c);
+
 #endif // customer_h_INCLUDED
 

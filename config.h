@@ -77,6 +77,11 @@
 #define TIME_PER_PROD 4
 #endif
 
+// Main supermarket loop poll time 
+#ifndef MAIN_POLL_TIME 
+#define MAIN_POLL_TIME 10
+#endif
+
 // ========== IPC-protocol messages ==========
 
 // Messages have a fixed size. Should be zero padded and NULL terminated.

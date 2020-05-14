@@ -29,7 +29,7 @@ int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
     while((err = lqueue_dequeue(cq->q, val)) < 0) {
         /* Queue is empty, wait for value or check if closed */
         if(LQUEUE_CLOSED(cq->q)) {
-            LOG_NEVER("buf %p was closed\n", (void*) cq);
+            LOG_NEVER("lqueue %p was closed\n", (void*) cq);
             MTX_UNLOCK_RET(cq->mutex);
             return ELQUEUECLOSED;
         } else if(err != -1) {
@@ -45,6 +45,31 @@ int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
     LOG_NEVER("successfully popped element %p\n", *val);
     return err;
 }
+
+int conc_lqueue_dequeue_nonblock(conc_lqueue_t* cq, void** val) {
+    int err = 0;
+    MTX_LOCK_RET(cq->mutex);
+    if((err = lqueue_dequeue(cq->q, val)) < 0) {
+        /* Queue is empty, wait for value or check if closed */
+        if(LQUEUE_CLOSED(cq->q)) {
+            LOG_NEVER("lqueue %p was closed\n", (void*) cq);
+            MTX_UNLOCK_RET(cq->mutex);
+            return ELQUEUECLOSED;
+        } else if(err != -1) {
+            LOG_CRITICAL("error in dequeue: %s", strerror(err));
+            MTX_UNLOCK_RET(cq->mutex);
+            return err;
+        }
+        /* Otherwise return ELQUEUEEMPTY */
+        MTX_UNLOCK_RET(cq->mutex);
+        return ELQUEUEEMPTY;
+    }
+    MTX_UNLOCK_RET(cq->mutex);
+
+    LOG_NEVER("successfully popped element %p\n", *val);
+    return err;
+}
+
 
 int conc_lqueue_closed(conc_lqueue_t* cq) {
     int err = 0;

@@ -11,4 +11,9 @@
 [ ] Termina manager come supermarket con var globale
 [X] Poll time in cashier threads to send num of enqueued custs to manager 
 [ ] Handle cashier and customer messages in manager (use strncomp to get header) 
+[ ] Apri e chiudi casse
 [ ] Keep an array of numbers of enqueued customers for each cashier in the manager
+[ ] Move strerror to strerror_r;  
+[X] SIGQUIT management; 
+[ ] Correct SIGHUP management
+[X] Fai rientrare clienti
