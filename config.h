@@ -21,6 +21,8 @@
 #define CASHIER_START_TIME_MIN 20
 #define CASHIER_START_TIME_MAX 80
 
+#define MSG_WORKER_POLL_TIME 40
+
 // ========== IPC-protocol messages ==========
 
 // Messages have a fixed size. Should be zero padded and NULL terminated.
@@ -31,7 +33,8 @@
 // This is the first message a supermarket sends to connect to the manager
 // Must be followed by the PID of the supermarket process ended by newline
 #define HELLO_BOSS "hello_boss\n"
-
+// Sent by server to client on conn established
+#define MSG_CONN_ESTABLISHED "conn_established\n"
 
 #endif // config_h_INCLUDED
 

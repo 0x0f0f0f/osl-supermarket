@@ -76,7 +76,7 @@ typedef struct conn_opt_s {
 void* conn_worker(void* arg) {
     conn_opt_t opt = *(conn_opt_t*) arg;
     char msgbuf[MSG_SIZE] = {0};
-    ssize_t nread;
+    ssize_t nread, nwrote;
     int err = 0;
 
     if(pthread_sigmask(SIG_BLOCK, &opt.sigset, NULL) < 0)
@@ -107,6 +107,14 @@ void* conn_worker(void* arg) {
                 }
                 // Push the process PID into clients table
                 opt.client_pids[opt.id] = pid;
+                strncpy(msgbuf, MSG_CONN_ESTABLISHED, MSG_SIZE);
+                LOG_DEBUG("Worker %d fd %d sending message: %s",
+                          opt.id, opt.fd, msgbuf);
+                if ((nwrote = writen(opt.fd, msgbuf, MSG_SIZE)) <= 0) {
+                    ERR("Sending connection confirm\n");
+                    goto conn_worker_exit;
+                }
+                memset(msgbuf, 0, MSG_SIZE);
                 LOG_DEBUG("Worker %d successfully connected to process %d\n", 
                     opt.id, opt.client_pids[opt.id]);
                 MTX_UNLOCK_EXT(opt.client_pids_mtx);

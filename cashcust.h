@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <pthread.h> 
 #include <stdbool.h>
+#include <signal.h>
 #include "conc_lqueue.h"
 
 // ========== Cashier Data Types ==========
@@ -17,6 +18,7 @@ typedef enum {
 // Data type for cashier thread.
 typedef struct cashier_opt_s {
     int id;
+    sigset_t sigset;
     // Concurrent customer queue
     conc_lqueue_t *custqueue;
     // Outbound message queue
@@ -49,6 +51,7 @@ typedef enum {
 // The customer thread follows a state machine model
 typedef struct customer_opt_s {
     int id;
+    sigset_t sigset;
     long buying_time;
     int products;
     // Wait on this condition variable until a reschedule event is sent
@@ -69,10 +72,14 @@ typedef struct customer_opt_s {
 
 void* cashier_worker(void* arg);
 void* customer_worker(void* arg);
-void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq,
+void cashier_init(cashier_opt_t *c, int id,
+                  sigset_t sigset, 
+                  conc_lqueue_t *outq,
                   long cashier_poll_time, long time_per_prod);
 
-void customer_init(customer_opt_t *c, int id, int *customer_count,
+void customer_init(customer_opt_t *c, int id,
+                   sigset_t sigset,
+                   int *customer_count,
                    pthread_mutex_t *customer_count_mtx,
                    cashier_opt_t *cashier_arr,
                    bool *customer_terminated,

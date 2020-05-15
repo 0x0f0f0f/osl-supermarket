@@ -22,14 +22,6 @@
 #define RAND_RANGE(low, up) \
     ((rand() % (up - low + 1)) + low)
 
-// Check if a shared flag is set, if so goto a local label
-#define CHECK_FLAG_GOTO(flag, mtx, lab) {\
-    MTX_LOCK_DIE(mtx);\
-    if(flag) {\
-        MTX_UNLOCK_DIE(mtx);\
-        goto lab;}\
-    MTX_UNLOCK_DIE(mtx);}
-
 // ========== System call utilities  ==========
 
 // Whether to log or not syscalls
@@ -155,8 +147,13 @@ int msleep(long msec);
 ssize_t  /* Read "n" bytes from a descriptor */
 readn(int fd, void *ptr, size_t n);
 
-
 ssize_t  /* Write "n" bytes to a descriptor */
 writen(int fd, void *ptr, size_t n);
+
+ssize_t  /* Receive "n" bytes from a socket */
+recvn(int fd, void *ptr, size_t n, int flags);
+
+ssize_t  /* Write "n" bytes to a socket*/
+sendn(int fd, void *ptr, size_t n, int flags);
 
 #endif // util_h_INCLUDED

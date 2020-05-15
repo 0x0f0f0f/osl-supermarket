@@ -37,6 +37,7 @@ lqueue_t* lqueue_init () {
     if(q == NULL) return q;
     q->head = NULL;
     q->closed = 0;
+    q->count = 0;
     return q;
 }
 

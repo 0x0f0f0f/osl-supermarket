@@ -16,6 +16,5 @@
 [X] SIGQUIT management; 
 [X] Correct SIGHUP management
 [X] Fai rientrare clienti
-[ ] spinlock for global flags
 [ ] config as argument
 [ ] Synchronization primitives that goto labels on fail

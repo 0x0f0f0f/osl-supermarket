@@ -2,10 +2,11 @@
 #define globals_h_INCLUDED
 
 #include <pthread.h>
+#include <signal.h>
 
-extern pthread_mutex_t flags_mtx;
-extern volatile char should_quit;
-extern volatile char should_close;
+extern volatile sig_atomic_t should_quit;
+extern volatile sig_atomic_t should_close;
+extern volatile sig_atomic_t server_connected;
 
 #endif // globals_h_INCLUDED
 

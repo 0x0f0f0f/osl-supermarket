@@ -5,15 +5,15 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <signal.h>
 
 #include "util.h"
 #include "cashcust.h"
 #include "config.h"
 #include "conc_lqueue.h"
 
-pthread_mutex_t flags_mtx = PTHREAD_MUTEX_INITIALIZER;
-volatile char should_quit = 0;
-volatile char should_close = 0;
+volatile sig_atomic_t should_quit = 0;
+volatile sig_atomic_t should_close = 0;
 
 long cashier_poll(cashier_opt_t *this) {
     CONC_LQUEUE_ASSERT_EXISTS(this->custqueue);
@@ -31,6 +31,7 @@ long cashier_poll(cashier_opt_t *this) {
 
 int customer_set_state(customer_opt_t *this, customer_state_t state,
                        customer_state_t *extstate) {
+    if(should_quit) return 1;
     MTX_LOCK_RET(this->state_mtx);
     *(this->state) = state;
     if(extstate != NULL) *extstate = *(this->state);
@@ -40,7 +41,8 @@ int customer_set_state(customer_opt_t *this, customer_state_t state,
     return 0;
 }
 
-void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq,
+void cashier_init(cashier_opt_t *c, int id,
+                  sigset_t sigset, conc_lqueue_t *outq,
                   long cashier_poll_time, long time_per_prod) {
     c->id = id;
     c->custqueue = conc_lqueue_init(c->custqueue);
@@ -74,9 +76,15 @@ void* cashier_worker(void* arg) {
          enqueued_customers;
 
     CONC_LQUEUE_ASSERT_EXISTS(this.custqueue);
+
     // ========== Data Initialization ==========
 
     srand(time(NULL));
+    if(pthread_sigmask(SIG_BLOCK, &this.sigset, NULL) < 0) {
+        ERR("Masking signals\n");
+        goto cashier_worker_exit;
+    }
+
     start_time = RAND_RANGE(CASHIER_START_TIME_MIN,
                             CASHIER_START_TIME_MAX); 
     poll_time = this.cashier_poll_time;
@@ -84,19 +92,14 @@ void* cashier_worker(void* arg) {
     // ========== Main loop ==========
 
     while(1) {
-        LOG_DEBUG("Cashier %d looping\n", this.id);
-        MTX_LOCK_EXT(&flags_mtx);
+        LOG_DEBUG("Cashier %d started\n", this.id);
         if(should_quit)  {
-            MTX_UNLOCK_EXT(&flags_mtx);
             goto cashier_worker_exit;
         } else if(should_close) {
             MTX_LOCK_EXT(this.state_mtx);
             *(this.state) = SHUTDOWN;
             MTX_UNLOCK_EXT(this.state_mtx);
         }
-        MTX_UNLOCK_EXT(&flags_mtx);
-
-        CHECK_FLAG_GOTO(should_quit, &flags_mtx, cashier_worker_exit);
 
         MTX_LOCK_EXT(this.state_mtx);
         while(this.state == CLOSED) {
@@ -135,6 +138,7 @@ void* cashier_worker(void* arg) {
             if(*(this.state) == SHUTDOWN) {
                 // If the supermarket is gently shutting down, exit the thread
                 // when no more customers are in line (happens on SIGHUP)
+                MTX_UNLOCK_EXT(this.state_mtx);
                 LOG_DEBUG("Cashier %d shutting down...\n", this.id);
                 goto cashier_worker_exit;
             }
@@ -147,7 +151,9 @@ cashier_worker_exit:
     pthread_exit(NULL);
 }
 
-void customer_init(customer_opt_t *c, int id, int *customer_count,
+void customer_init(customer_opt_t *c, int id,
+                   sigset_t sigset,
+                   int *customer_count,
                    pthread_mutex_t *customer_count_mtx,
                    cashier_opt_t *cashier_arr,
                    bool *customer_terminated,
@@ -186,10 +192,15 @@ void customer_destroy(customer_opt_t *c) {
 void* customer_worker(void* arg) {
     customer_opt_t this = *(customer_opt_t *) arg;
     customer_state_t state = WAIT_BUY;
-    
-    // ========== Data initialization ==========
+    size_t min_queue_id = 0;
+    long min_queue_size = -1, curr_size = 0;
+    // ========== Initialization ==========
 
     srand(time(NULL));
+    if(pthread_sigmask(SIG_BLOCK, &this.sigset, NULL) < 0) {
+        ERR("Masking signals\n");
+        goto customer_worker_exit;
+    }
 
     // ========== Shopping ==========
 
@@ -197,38 +208,51 @@ void* customer_worker(void* arg) {
     customer_set_state(&this, BUY, &state);
     msleep(this.buying_time);
 
+    if (this.products == 0) {
+        customer_set_state(&this, TERMINATED, &state);
+        goto customer_worker_wait_confirm;
+    }
+    
     // ========== Wait for an open cashier and enqueue ==========
 
     while(state != WAIT_PAY) {
+        // TODO: move the scheduling to a different function
         LOG_DEBUG("Customer %d is looking for a cashier...\n", this.id);
 
-        CHECK_FLAG_GOTO(should_quit, &flags_mtx, customer_worker_exit);
+        if (should_quit) goto customer_worker_exit;
 
+        // Find the smallest queue
         for(size_t i = 0; i < this.cashier_arr_size; i++) {
             MTX_LOCK_EXT(this.cashier_arr[i].state_mtx);
             if(*(this.cashier_arr[i].state) == OPEN) {
-                MTX_UNLOCK_EXT(this.cashier_arr[i].state_mtx);
-                conc_lqueue_enqueue(this.cashier_arr[i].custqueue, arg);
-                customer_set_state(&this, WAIT_PAY, &state);
-                break;
+                curr_size = conc_lqueue_getsize(this.cashier_arr[i].custqueue);
+                if(min_queue_size <= 0 || curr_size < min_queue_size) { 
+                    min_queue_id = i;
+                    min_queue_size = curr_size;
+                }
             }
             MTX_UNLOCK_EXT(this.cashier_arr[i].state_mtx);
         }
+
+        if(min_queue_size >= 0) {
+            LOG_DEBUG("Enqueueing customer %d to cashier %zu",
+                this.id, min_queue_id);
+            conc_lqueue_enqueue(this.cashier_arr[min_queue_id].custqueue, arg);
+            customer_set_state(&this, WAIT_PAY, &state);
+            break;
+        } 
     }
 
     // ========== After enqueueing, wait until cashier has finished ==========
-    CHECK_FLAG_GOTO(should_quit, &flags_mtx, customer_worker_exit);
+    if (should_quit) goto customer_worker_exit;
 
     LOG_DEBUG("Customer %d is in queue...\n", this.id);
     MTX_LOCK_EXT(this.state_mtx);
     while(*(this.state) != PAYING) {
-        MTX_LOCK_DIE(&flags_mtx);
         if(should_quit) {
-            MTX_UNLOCK_DIE(&flags_mtx);
             MTX_UNLOCK_EXT(this.state_mtx);
             goto customer_worker_exit;
         }
-        MTX_UNLOCK_DIE(&flags_mtx);
 
         COND_WAIT_EXT(this.state_change_event, this.state_mtx);
     }
@@ -237,13 +261,10 @@ void* customer_worker(void* arg) {
     LOG_DEBUG("Customer %d is paying...\n", this.id);
     MTX_LOCK_EXT(this.state_mtx);
     while(*(this.state) != TERMINATED) {
-        MTX_LOCK_DIE(&flags_mtx);
         if(should_quit) {
-            MTX_UNLOCK_DIE(&flags_mtx);
             MTX_UNLOCK_EXT(this.state_mtx);
             goto customer_worker_exit;
         }
-        MTX_UNLOCK_DIE(&flags_mtx);
 
         COND_WAIT_EXT(this.state_change_event, this.state_mtx);
     }
@@ -251,6 +272,7 @@ void* customer_worker(void* arg) {
 
     LOG_DEBUG("Customer %d is waiting for exit confirmation\n", this.id);
 
+customer_worker_wait_confirm:
     // TODO after paying ask manager for out
 customer_worker_exit:
     MTX_LOCK_EXT(this.customer_count_mtx);
