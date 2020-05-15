@@ -8,7 +8,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <errno.h>
+#include <limits.h>
 
+#include "ini.h"
 #include "config.h"
 #include "util.h"
 
@@ -19,6 +21,7 @@ typedef struct signal_worker_opt_s {
     // Array of client pids
     pid_t *client_pids;
     pthread_mutex_t* client_pids_mtx;
+    int manager_pool_size;
 } signal_worker_opt_t;
 
 void* signal_worker (void* arg) {
@@ -30,13 +33,13 @@ void* signal_worker (void* arg) {
 
     // Wait for the signals
     while(1) {
-        SYSCALL(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
+        SYSCALL_DIE(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
         // Forward SIGHUP (gentle quit) and SIGQUIT (brutal)
         // To connected clients
         LOG_DEBUG("Intercepted Signal %s\n", strsignal(signum));
         if (signum == SIGHUP || signum == SIGQUIT) {
             MTX_LOCK_DIE(opt.client_pids_mtx);
-            for(int i = 0; i < MANAGER_POOL_SIZE; i++)
+            for(int i = 0; i < opt.manager_pool_size; i++)
                 if(opt.client_pids[i] > 0) {
                     LOG_DEBUG("Killing process %d with signal %s\n",
                         opt.client_pids[i], strsignal(signum));
@@ -50,11 +53,6 @@ void* signal_worker (void* arg) {
     exit(EXIT_FAILURE);
 }
 
-// Remove socket and unnecessary resources to be executed at exit.
-void cleanup() {
-    LOG_DEBUG("Cleaning up...\n");
-    unlink(DEFAULT_SOCK_PATH);
-}
 
 // Contains options passed to connection workers
 typedef struct conn_opt_s {
@@ -142,19 +140,67 @@ conn_worker_exit:
 int main(int argc, char const* argv[]) {
     // Current thread
     int c_thr = 0;
-    int sock_fd, conn_fd, err = 0;
+    int sock_fd, conn_fd, err = 0,
+        manager_pool_size = 2;
     struct sockaddr_un addr;
-    pthread_t conn_tid[MANAGER_POOL_SIZE] = {0}, sig_tid;
-    pthread_attr_t conn_attrs[MANAGER_POOL_SIZE] = {0}, sig_attr;
-    int statuses[MANAGER_POOL_SIZE] = {0};
-    pid_t client_pids[MANAGER_POOL_SIZE] = {0};
+    ini_t *config;
+    pthread_t *conn_tid, sig_tid;
+    pthread_attr_t *conn_attrs, sig_attr;
+    int *statuses;
+    pid_t *client_pids;
     pthread_mutex_t client_pids_mtx;
     sigset_t sigset;
     int running_count = 0;
     pthread_mutex_t count_mtx;
     pthread_cond_t can_spawn_thread_event;
+    char socket_path[UNIX_MAX_PATH] = {0}, 
+         config_path[PATH_MAX] = {0};
+
+    // ========== Read config file ==========
+    // TODO get config file from arg
     
-    SYSCALL(err, atexit(cleanup), "Registering cleanup handler at exit\n");
+    // Set default strings
+    strncpy(socket_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH);
+
+    strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX);
+    if(access(config_path, F_OK) == -1) {
+        err = errno;
+        ERR_SET_GOTO(main_exit_1, err, "Could not open config file %s: %s",
+                     config_path, strerror(err));
+    }
+
+    config = ini_load(config_path);
+    ini_sget(config, NULL, "manager_pool_size", "%d", &manager_pool_size);
+    if(manager_pool_size <= 0) {
+        ERR("manager_pool_size must be a positive integer\n");
+        goto main_exit_1;
+    }
+    ini_sget(config, NULL, "socket_path", "%d", &socket_path);
+    if(strlen(socket_path) <= 0) {
+        ERR("Invalid socket path\n");
+        goto main_exit_1;
+    }
+
+    ini_free(config);
+
+    // ========== Data initialization ==========
+
+    conn_tid = malloc(manager_pool_size * sizeof(pthread_t));
+    conn_attrs = malloc(manager_pool_size * sizeof(pthread_attr_t));
+    statuses = malloc(manager_pool_size * sizeof(int));
+    client_pids = malloc(manager_pool_size * sizeof(pid_t));
+
+    for(int i = 0; i < manager_pool_size; i++) {
+        conn_tid[i] = 0;
+        statuses[i] = 0;
+        client_pids[i] = 0;
+        if((err = pthread_attr_init(&conn_attrs[i])) != 0)
+            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
+        if((err = pthread_attr_setdetachstate(&conn_attrs[i],
+                                              PTHREAD_CREATE_DETACHED)) != 0)
+            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
+
+    }
 
     // Initializing mutexes, conds and thread attributes
     if(pthread_attr_init(&sig_attr) < 0)
@@ -165,14 +211,6 @@ int main(int argc, char const* argv[]) {
         ERR_DIE("Allocating mutex\n");
     if(pthread_cond_init(&can_spawn_thread_event, NULL) < 0)
         ERR_DIE("Allocating cond var\n");
-
-    for (int i = 0; i < MANAGER_POOL_SIZE; i++) {
-        if((err = pthread_attr_init(&conn_attrs[i])) != 0)
-            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-        if((err = pthread_attr_setdetachstate(&conn_attrs[i],
-                                              PTHREAD_CREATE_DETACHED)) != 0)
-            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-    }
 
     // Create signal set
     sigemptyset(&sigset);
@@ -186,6 +224,7 @@ int main(int argc, char const* argv[]) {
         sigset,
         client_pids,
         &client_pids_mtx,
+        manager_pool_size,
     };
     if(pthread_create(&sig_tid, &sig_attr, signal_worker, &signal_worker_opt) 
         < 0 ) ERR_DIE("Creating signal handler thread\n");
@@ -193,23 +232,26 @@ int main(int argc, char const* argv[]) {
     // Init unix socket
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH);
-    unlink(DEFAULT_SOCK_PATH);
-    SYSCALL(sock_fd, socket(AF_UNIX, SOCK_STREAM, 0), "Creating socket\n");
-    SYSCALL(err, bind(sock_fd, (struct sockaddr*) &addr, sizeof(addr)),
-        "Binding socket\n");
-    SYSCALL(err, listen(sock_fd, MANAGER_POOL_SIZE), "Listening on socket\n");
+    strncpy(addr.sun_path, socket_path, UNIX_MAX_PATH);
+    unlink(socket_path);
+    SYSCALL_SET_GOTO(sock_fd, socket(AF_UNIX, SOCK_STREAM, 0), 
+                     "Creating socket\n", err, main_exit_1);
+    SYSCALL_SET_GOTO(err, bind(sock_fd, (struct sockaddr*) &addr, 
+                     sizeof(addr)), "Binding socket\n", err, main_exit_1);
+    SYSCALL_SET_GOTO(err, listen(sock_fd, manager_pool_size),
+                     "Listening on socket\n", err, main_exit_1);
 
     while (1) {
         MTX_LOCK_DIE(&count_mtx);
-        while(running_count >= MANAGER_POOL_SIZE) {
+        while(running_count >= manager_pool_size) {
             LOG_DEBUG("CONNECTION POOL FULL! WAITING!\n");
             COND_WAIT_DIE(&can_spawn_thread_event, &count_mtx);
         }
         running_count++;
         MTX_UNLOCK_DIE(&count_mtx);
         LOG_DEBUG("Waiting for connection...\n");
-        SYSCALL(conn_fd, accept(sock_fd, NULL, 0), "Accepting connection\n");
+        SYSCALL_SET_GOTO(conn_fd, accept(sock_fd, NULL, 0),
+                        "Accepting connection\n", err, main_exit_1);
         conn_opt_t opt = { 
             conn_fd,
             c_thr,
@@ -224,9 +266,10 @@ int main(int argc, char const* argv[]) {
         err = pthread_create(&conn_tid[c_thr], &conn_attrs[c_thr],
                              conn_worker, &opt);
         if(err != 0) ERR_DIE("Spawning thread: %s", strerror(err));
-        c_thr = (c_thr + 1) % MANAGER_POOL_SIZE;
+        c_thr = (c_thr + 1) % manager_pool_size;
     }
-    
-    printf("hello world!\n");
+
+main_exit_1:
+    unlink(socket_path);
     return 0;
 }

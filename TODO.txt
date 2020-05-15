@@ -1,8 +1,8 @@
 [?] threadpool dispatcher per le casse
 [X] cassa consumatore con variabile attiva o no
-[ ] cliente produttore su coda cassiere
+[X] cliente produttore su coda cassiere
 [ ] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
-[ ] external config
+[X] external config
 [X] handle signals in processes
 [X] message worker in supermarket
 [ ] No leaks in supermarket
@@ -12,8 +12,10 @@
 [X] Poll time in cashier threads to send num of enqueued custs to manager 
 [ ] Handle cashier and customer messages in manager (use strncomp to get header) 
 [ ] Apri e chiudi casse
-[ ] Keep an array of numbers of enqueued customers for each cashier in the manager
 [ ] Move strerror to strerror_r;  
 [X] SIGQUIT management; 
-[ ] Correct SIGHUP management
+[X] Correct SIGHUP management
 [X] Fai rientrare clienti
+[ ] spinlock for global flags
+[ ] config as argument
+[ ] Synchronization primitives that goto labels on fail

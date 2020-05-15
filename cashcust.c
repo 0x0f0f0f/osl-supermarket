@@ -15,12 +15,11 @@ pthread_mutex_t flags_mtx = PTHREAD_MUTEX_INITIALIZER;
 volatile char should_quit = 0;
 volatile char should_close = 0;
 
-
 long cashier_poll(cashier_opt_t *this) {
     CONC_LQUEUE_ASSERT_EXISTS(this->custqueue);
     long enqueued_customers = -1;
     char *msgbuf = NULL;
-    LOG_DEBUG("Cashier %d polling...\n", this->id);
+    LOG_NEVER("Cashier %d polling...\n", this->id);
     enqueued_customers = conc_lqueue_getsize(this->custqueue);
     msgbuf = malloc(MSG_SIZE);
     memset(msgbuf, 0, MSG_SIZE);
@@ -41,13 +40,16 @@ int customer_set_state(customer_opt_t *this, customer_state_t state,
     return 0;
 }
 
-void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq) {
+void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq,
+                  long cashier_poll_time, long time_per_prod) {
     c->id = id;
     c->custqueue = conc_lqueue_init(c->custqueue);
     c->outmsgqueue = outq;
     c->state = malloc(sizeof(cashier_state_t));
     c->state_mtx = malloc(sizeof(pthread_mutex_t));
     c->state_change_event = malloc(sizeof(pthread_cond_t));
+    c->cashier_poll_time = cashier_poll_time;
+    c->time_per_prod = time_per_prod;
     pthread_mutex_init(c->state_mtx, NULL);
     pthread_cond_init(c->state_change_event, NULL);
 }
@@ -63,7 +65,7 @@ void cashier_destroy(cashier_opt_t *c) {
 
 void* cashier_worker(void* arg) {
     cashier_opt_t this = *(cashier_opt_t *) arg;
-    customer_opt_t *current_cust = NULL;
+    customer_opt_t *curr_cust = NULL;
     // Time needed to initially process a customer,
     long start_time,
          poll_time,
@@ -75,13 +77,25 @@ void* cashier_worker(void* arg) {
     // ========== Data Initialization ==========
 
     srand(time(NULL));
-    start_time = RAND_RANGE(20, 80); 
-    poll_time = CASHIER_POLL_TIME;
+    start_time = RAND_RANGE(CASHIER_START_TIME_MIN,
+                            CASHIER_START_TIME_MAX); 
+    poll_time = this.cashier_poll_time;
 
     // ========== Main loop ==========
 
     while(1) {
         LOG_DEBUG("Cashier %d looping\n", this.id);
+        MTX_LOCK_EXT(&flags_mtx);
+        if(should_quit)  {
+            MTX_UNLOCK_EXT(&flags_mtx);
+            goto cashier_worker_exit;
+        } else if(should_close) {
+            MTX_LOCK_EXT(this.state_mtx);
+            *(this.state) = SHUTDOWN;
+            MTX_UNLOCK_EXT(this.state_mtx);
+        }
+        MTX_UNLOCK_EXT(&flags_mtx);
+
         CHECK_FLAG_GOTO(should_quit, &flags_mtx, cashier_worker_exit);
 
         MTX_LOCK_EXT(this.state_mtx);
@@ -91,10 +105,11 @@ void* cashier_worker(void* arg) {
         MTX_UNLOCK_EXT(this.state_mtx);
 
         if(conc_lqueue_dequeue_nonblock(this.custqueue, 
-                                        (void *)&current_cust) == 0) {
-            customer_set_state(current_cust, PAYING, NULL);
+                                        (void *)&curr_cust) == 0) {
+            customer_set_state(curr_cust, PAYING, NULL);
 
-            pay_time = start_time + (current_cust->products * TIME_PER_PROD);
+            pay_time = start_time + (curr_cust->products * 
+                this.time_per_prod);
 
             if(pay_time > poll_time) {
                 for(int i = 0; i < pay_time / poll_time; i++) {
@@ -104,12 +119,12 @@ void* cashier_worker(void* arg) {
                 }
                 // Sleep for the remaining pay time
                 msleep(pay_time % poll_time);
-                customer_set_state(current_cust, TERMINATED, NULL);
+                customer_set_state(curr_cust, TERMINATED, NULL);
             } else {
                 // pay_time < poll_time
                 enqueued_customers = cashier_poll(&this);
                 msleep(pay_time);
-                customer_set_state(current_cust, TERMINATED, NULL);
+                customer_set_state(curr_cust, TERMINATED, NULL);
                 msleep(poll_time - pay_time);
             }
         } else {
@@ -135,10 +150,13 @@ cashier_worker_exit:
 void customer_init(customer_opt_t *c, int id, int *customer_count,
                    pthread_mutex_t *customer_count_mtx,
                    cashier_opt_t *cashier_arr,
-                   bool *customer_terminated) {
+                   bool *customer_terminated,
+                   long max_shopping_time, 
+                   int product_cap,
+                   size_t cashier_arr_size) {
     c->id = id;
-    c->buying_time = RAND_RANGE(10, MAX_SHOPPING_TIME);
-    c->products = RAND_RANGE(0, PRODUCT_CAP);
+    c->buying_time = RAND_RANGE(10, max_shopping_time);
+    c->products = RAND_RANGE(0, product_cap);
     c->schedule_cond = malloc(sizeof(pthread_cond_t));
     c->state_mtx = malloc(sizeof(pthread_mutex_t));
     c->state_change_event = malloc(sizeof(pthread_cond_t)); 
@@ -148,6 +166,7 @@ void customer_init(customer_opt_t *c, int id, int *customer_count,
     c->customer_terminated = customer_terminated;
     c->customer_count_mtx = customer_count_mtx;
     c->cashier_arr = cashier_arr;
+    c->cashier_arr_size = cashier_arr_size;
     pthread_cond_init(c->schedule_cond, NULL);
     pthread_mutex_init(c->state_mtx, NULL);
     pthread_cond_init(c->state_change_event, NULL);
@@ -185,7 +204,7 @@ void* customer_worker(void* arg) {
 
         CHECK_FLAG_GOTO(should_quit, &flags_mtx, customer_worker_exit);
 
-        for(int i = 0; i < NUM_CASHIERS; i++) {
+        for(size_t i = 0; i < this.cashier_arr_size; i++) {
             MTX_LOCK_EXT(this.cashier_arr[i].state_mtx);
             if(*(this.cashier_arr[i].state) == OPEN) {
                 MTX_UNLOCK_EXT(this.cashier_arr[i].state_mtx);

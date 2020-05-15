@@ -25,6 +25,9 @@ typedef struct cashier_opt_s {
     cashier_state_t *state;
     pthread_mutex_t *state_mtx;
     pthread_cond_t *state_change_event;
+    // Various time units
+    long cashier_poll_time;
+    long time_per_prod;
 } cashier_opt_t;
 
 // ========== Customer Data Types ==========
@@ -59,17 +62,23 @@ typedef struct customer_opt_s {
     bool *customer_terminated;
     // Array of cashiers to choose where to enqueue the customer
     cashier_opt_t *cashier_arr;
+    size_t cashier_arr_size;
 } customer_opt_t;
 
 // ========== Worker Function Declarations ==========
 
 void* cashier_worker(void* arg);
 void* customer_worker(void* arg);
-void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq);
+void cashier_init(cashier_opt_t *c, int id, conc_lqueue_t *outq,
+                  long cashier_poll_time, long time_per_prod);
+
 void customer_init(customer_opt_t *c, int id, int *customer_count,
                    pthread_mutex_t *customer_count_mtx,
                    cashier_opt_t *cashier_arr,
-                   bool *customer_terminated);
+                   bool *customer_terminated,
+                   long max_shopping_time, 
+                   int product_cap,
+                   size_t cashier_arr_size);
 
 void cashier_destroy(cashier_opt_t *c);
 void customer_destroy(customer_opt_t *c);

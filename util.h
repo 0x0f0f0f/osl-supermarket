@@ -40,11 +40,18 @@
 #endif
 
 // Run a syscall, store the result and die on fail
-#define SYSCALL(result, call, msg) \
+#define SYSCALL_DIE(result, call, msg) \
     LOGCALL(msg);\
     if((result = call) == -1) \
     { int e = errno; char errs[1024]; strerror_r(e, &errs[0], 1024);\
      ERR("%s: %s\n", msg, errs); exit(e); }
+
+// Run a syscall, store the result set a value and goto on fail
+#define SYSCALL_SET_GOTO(result, call, msg, set, lab) \
+    LOGCALL(msg);\
+    if((result = call) == -1) \
+    { set = errno; char errs[1024]; strerror_r(set, &errs[0], 1024);\
+     ERR("%s: %s\n", msg, errs); goto lab; }
 
 // ========== Synchronization macros that die on fail  ==========
 
