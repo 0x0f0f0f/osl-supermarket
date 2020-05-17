@@ -1,14 +1,14 @@
 CC = clang
-CFLAGS = -Wall -g -std=gnu99 -D_POSIX_C_SOURCE=200809L
-LIBS = -lpthread -lm
+CFLAGS = -Wall -std=gnu99 -pthread -D_POSIX_C_SOURCE=200809L
+LIBS = 
 OPTFLAGS = -O3
-LDFLAGS = -L.
+LDFLAGS = 
 INCLUDES = -I.
 TARGETS = manager supermarket
 OBJECTS = lqueue.o conc_lqueue.o linked_list.o util.o cashcust.o ini.o
 TEXCC = tectonic
 
-.PHONY: all bin clean sanitize prod debug
+.PHONY: all report test1 test2 clean tsan msan asan never prod debug
 .SUFFIXES: .c .h
 
 # Default to optimized production target.
@@ -18,8 +18,15 @@ prod: CFLAGS+=$(OPTFLAGS)
 prod: all
 
 # Use clang thread sanitizer.
-sanitize: CFLAGS+=-fno-omit-frame-pointer -fsanitize=thread
-sanitize: debug
+tsan: CFLAGS+=-fno-omit-frame-pointer -fsanitize=thread
+tsan: debug
+# Use clang address sanitizer.
+asan: CFLAGS+=-fno-omit-frame-pointer -fsanitize=address
+asan: debug
+# Use clang memory sanitizer.
+msan: CFLAGS+=-fno-omit-frame-pointer -fsanitize=memory
+msan: debug
+
 
 never: CFLAGS+=-g
 never: LOGLEVEL+=-DLOG_SYSCALL

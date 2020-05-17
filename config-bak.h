@@ -54,18 +54,6 @@
 #define CONN_ATTEMPT_DELAY 500
 #endif
 
-// Number customers enqueued to a single cashier
-// necessary to open a cashier (S2)
-#ifndef UNDERCROWDED_CASH_TRESHOLD
-#define UNDERCROWDED_CASH_TRESHOLD 2
-#endif
-
-// Number of cashiers with <= 1 customers enqueued
-// necessary to close a cashier (S1)
-#ifndef OVERCROWDED_CASH_TRESHOLD
-#define OVERCROWDED_CASH_TRESHOLD 10
-#endif
-
 // Regular time interval when cashier queue size is polled
 // and sent to manager
 #ifndef CASHIER_POLL_TIME

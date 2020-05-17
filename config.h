@@ -17,24 +17,43 @@
 #define DEFAULT_PRODUCT_CAP 80 
 #define DEFAULT_SUPERMARKET_POLL_TIME 10
 
+// Number of cashiers with <= 1 enqueued customer
+// necessary to close a cash register
+#define DEFAULT_UNDERCROWDED_CASH_TRESHOLD 2
+// Number of customers enqueued to a single cashier
+// necessary to open another one
+#define DEFAULT_OVERCROWDED_CASH_TRESHOLD 10
 
 #define CASHIER_START_TIME_MIN 20
 #define CASHIER_START_TIME_MAX 80
 
-#define MSG_WORKER_POLL_TIME 40
+
+#define MANAGER_POOL_SIZE 2
 
 // ========== IPC-protocol messages ==========
 
 // Messages have a fixed size. Should be zero padded and NULL terminated.
 #define MSG_SIZE 512
 // Must be followed by the ID of the cashier ended by newline
-#define MSG_OPEN_CASH "open_cashier\n"
-#define MSG_CLOSE_CASH "close_cashier\n"
+#define MSG_OPEN_CASH "open_cashier"
+#define MSG_CLOSE_CASH "close_cashier"
+
+// Confirmation messages 
+#define MSG_CASH_CLOSED "closed"
+#define MSG_CASH_OPENED "opened"
+
 // This is the first message a supermarket sends to connect to the manager
 // Must be followed by the PID of the supermarket process ended by newline
 #define HELLO_BOSS "hello_boss\n"
 // Sent by server to client on conn established
 #define MSG_CONN_ESTABLISHED "conn_established\n"
+#define MSG_CASH_HEADER "cash"
+#define MSG_QUEUE_SIZE "queue_size"
+#define MSG_CUST_HEADER "cust"
+// Request when customer wants to exit
+#define MSG_WANT_OUT "want_out"
+// Customer exit confirmation
+#define MSG_GET_OUT "get_out"
 
 #endif // config_h_INCLUDED
 

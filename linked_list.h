@@ -20,7 +20,11 @@ node_t* list_remove_head(node_t* head);
 
 
 size_t list_length(node_t* head);
+/* Recursively free list and values */
+void list_destroy(node_t* head);
+/* Only free nodes */
 void list_free(node_t* head);
+
 void list_map(node_t* head, void fun(void*));
 
 #endif

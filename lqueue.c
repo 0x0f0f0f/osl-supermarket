@@ -42,7 +42,12 @@ lqueue_t* lqueue_init () {
 }
 
 void lqueue_destroy(lqueue_t* q) {
-    list_free(q->head);
+    list_destroy(q->head);
     free(q);
     return;
+}
+
+void lqueue_free(lqueue_t* q) {
+    list_free(q->head);
+    free(q);
 }

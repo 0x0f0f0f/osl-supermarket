@@ -48,7 +48,7 @@ size_t list_length(node_t* head) {
     return c;
 }
 
-void list_free(node_t* head) {
+void list_destroy(node_t* head) {
     node_t* tmp;
     while (head != NULL) {
         tmp = head;
@@ -58,6 +58,17 @@ void list_free(node_t* head) {
     }
     return;
 }
+
+void list_free(node_t* head) {
+    node_t* tmp;
+    while (head != NULL) {
+        tmp = head;
+        head = head->next;
+        free(tmp);
+    }
+    return;
+}
+
 
 void list_map(node_t* head, void fun(void*)) {
     node_t *curr = head;

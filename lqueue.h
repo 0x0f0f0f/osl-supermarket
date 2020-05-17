@@ -30,4 +30,7 @@ lqueue_t* lqueue_init();
 
 void lqueue_destroy(lqueue_t* q);
 
+/* Destroy the queue but do not destroy the contents */
+void lqueue_free(lqueue_t* q);
+
 #endif

@@ -19,158 +19,126 @@
 #include "conc_lqueue.h"
 #include "cashcust.h"
 
-volatile sig_atomic_t server_connected = 0;
 
-// ========== Signal Handler Worker ==========
+// ========== Signal Handler ==========
 
-typedef struct signal_worker_opt_s {
-    // Signal set to be handled
-    sigset_t sigset;
-} signal_worker_opt_t;
-
-// This thread waits for SIGHUP to perform a gentle exit
-void* signal_worker(void* arg) {
-    signal_worker_opt_t opt = *(signal_worker_opt_t *) arg;
-    int err, signum;
-
-    if(pthread_sigmask(SIG_BLOCK, &opt.sigset, NULL) < 0)
-        ERR_DIE("Masking signals in connection thread");
-
-    while(1) {
-        SYSCALL_DIE(err, sigwait(&opt.sigset, &signum),
-                    "waiting for signals\n");
-        LOG_DEBUG("Intercepted Signal %s\n", strsignal(signum));
-        if (signum == SIGHUP) should_close = 1;
-        else should_quit = 1;
-        pthread_exit(NULL);
-   }
-   exit(EXIT_FAILURE);
+static void signal_handler(int sig) {
+    if (sig == SIGHUP) should_close = 1;
+    else should_quit = 1;
 }
 
 // ========== Outbound Message Worker ==========
 
 // Contains options passed to the messaging thread
 typedef struct msg_worker_opt_s {
-    // Signals to be blocked
-    sigset_t sigset;
     // Connection socket file descriptor
     int sock_fd;
-    // message queues
-    conc_lqueue_t *outmsgqueue; 
-    conc_lqueue_t *inmsgqueue; 
+    // message queue
+    conc_lqueue_t *msgqueue; 
 } msg_worker_opt_t;
 
 
-void* msg_worker(void* arg) {
+void* outmsg_worker(void* arg) {
     msg_worker_opt_t opt = *(msg_worker_opt_t *)arg;
     char *msgbuf = malloc(MSG_SIZE);
-    char statbuf[MSG_SIZE];
-    ssize_t sent, received;
+    ssize_t sent;
     int err;
 
-    if(pthread_sigmask(SIG_BLOCK, &opt.sigset, NULL) < 0) {
-        ERR("Masking signals in connection thread");
-        goto msg_worker_exit;
-    }
-
-    memset(msgbuf, 0, MSG_SIZE);
-    strncpy(msgbuf, HELLO_BOSS, MSG_SIZE);
-    SYSCALL_SET_GOTO(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE),
-                     "sending header\n", err, msg_worker_exit);
-    memset(msgbuf, 0, MSG_SIZE);
-    snprintf(msgbuf, MSG_SIZE, "%d\n", getpid());
-    
-    SYSCALL_SET_GOTO(sent, writen(opt.sock_fd, msgbuf, MSG_SIZE),
-                     "sending pid\n", err, msg_worker_exit);
-
-    SYSCALL_SET_GOTO(sent, readn(opt.sock_fd, statbuf, MSG_SIZE), 
-                     "getting conn confirm\n", err, msg_worker_exit);
-
-    if (strncmp(statbuf, MSG_CONN_ESTABLISHED, MSG_SIZE) != 0) {
-        ERR("Could not connect");
-        should_quit = 1;
-        goto msg_worker_exit;
-    }
-
-    server_connected = 1;
-
-    memset(statbuf, 0, MSG_SIZE);
-    free(msgbuf);
-
-    while (1) {
-        if (should_quit) goto msg_worker_exit;
-
+    while(1) {
+        if (should_quit) goto outmsg_worker_exit;
         // Pop messages from queue and send them
-        if (conc_lqueue_closed(opt.outmsgqueue)) {
+        if (conc_lqueue_closed(opt.msgqueue)) {
             LOG_DEBUG("Detected closed queue\n");
-            goto msg_worker_exit;  
+            goto outmsg_worker_exit;  
         }
 
-        if(conc_lqueue_dequeue_nonblock(opt.outmsgqueue, (void *) &msgbuf) == 0) {
-            LOG_DEBUG("Sending message: %s\n", msgbuf);
-            SYSCALL_SET_GOTO(sent, sendn(opt.sock_fd, msgbuf, MSG_SIZE, 0),
-                "sending message\n", err, msg_worker_exit);
+        if(conc_lqueue_dequeue_nonblock(opt.msgqueue, (void *) &msgbuf) == 0) {
+            LOG_DEBUG("Sending message: %s", msgbuf);
+            if (sendn(opt.sock_fd, msgbuf, MSG_SIZE, 0) == -1) {
+                err = errno;
+                free(msgbuf);
+                ERR("Error sending message: %s", strerror(err));
+                goto outmsg_worker_exit;
+            }
             free(msgbuf);
         }
-
-        if(conc_lqueue_closed(opt.inmsgqueue)) {
-            LOG_DEBUG("Detected closed queue\n");
-            goto msg_worker_exit;  
-        } 
-
-        // Non blocking, full read
-        received = recvn(opt.sock_fd, statbuf, MSG_SIZE, MSG_DONTWAIT);
-        err = errno;
-        
-        if (received == 0) {
-            LOG_DEBUG("Detected closed socket\n");
-            goto msg_worker_exit;
-        } else if (received < 0) {
-            if (err != EAGAIN && err != EWOULDBLOCK) {
-                LOG_CRITICAL("Error while reading socket: %s\n", strerror(err));
-                goto msg_worker_exit;
-            }
-        } else {
-            LOG_DEBUG("Received message: %s\n", statbuf);
-            msgbuf = malloc(MSG_SIZE);
-            memset(msgbuf, 0, MSG_SIZE);
-            strncpy(msgbuf, statbuf, MSG_SIZE);
-            memset(statbuf, 0, MSG_SIZE);
-            if(conc_lqueue_enqueue(opt.inmsgqueue, (void*) msgbuf) != 0) {
-                LOG_DEBUG("Error while enqueueing message\n");
-                goto msg_worker_exit;  
-            }
-        }
-   
-        msleep(MSG_WORKER_POLL_TIME); 
     }
 
-msg_worker_exit:
+outmsg_worker_exit:
+    pthread_exit(NULL);
+}
+
+// ========== Inbound Message Worker ==========
+
+void* inmsg_worker(void* arg) {
+    msg_worker_opt_t opt = *(msg_worker_opt_t *)arg;
+    char statbuf[MSG_SIZE];
+    int err;
+    char *msgbuf = NULL;
+    ssize_t received;
+
+    while(1) {
+        if (should_quit) goto inmsg_worker_exit;
+
+        received = readn(opt.sock_fd, statbuf, MSG_SIZE);
+        if (received == 0) {
+            LOG_DEBUG("Detected closed socket\n");
+            goto inmsg_worker_exit;
+        } else if (received < 0) {
+            err = errno;
+            if (err != EINTR)
+            LOG_CRITICAL("Error while reading socket: %s\n", strerror(err));
+            goto inmsg_worker_exit;
+        }
+
+        if(conc_lqueue_closed(opt.msgqueue)) {
+            LOG_DEBUG("Detected closed queue\n");
+            goto inmsg_worker_exit;  
+        } 
+        LOG_DEBUG("Received message: %s", statbuf);
+        msgbuf = malloc(MSG_SIZE);
+        memset(msgbuf, 0, MSG_SIZE);
+        strncpy(msgbuf, statbuf, MSG_SIZE);
+        if(conc_lqueue_enqueue(opt.msgqueue, (void*) msgbuf) != 0) {
+            LOG_DEBUG("Error while enqueueing message\n");
+            goto inmsg_worker_exit;  
+        }
+    }
+
+inmsg_worker_exit:
     pthread_exit(NULL);
 }
 
 
 // ========== Main Thread ==========
 
-int main(int argc, char const* argv[]) {
-    int sock_fd, sock_flags = 0, conn_attempt_count = 0, err = 0,
+int main(int argc, char* const argv[]) {
+    int sock_fd, conn_attempt_count = 0, err = 0,
         customer_count = 0;
-    pthread_t sig_tid, msg_tid;
-    pthread_attr_t sig_attr, msg_attr;
-    sigset_t sigset;
-    char msgbuf[MSG_SIZE] = {0}, config_path[PATH_MAX] = {0};
+    char *msgbuf, 
+         statbuf[MSG_SIZE] = {0},
+         config_path[PATH_MAX] = {0};
     conc_lqueue_t *outmsgqueue = NULL, *inmsgqueue = NULL;
     struct sockaddr_un addr;
+    struct sigaction act;
+
     ini_t *config;
-    
+    size_t sent, received;
+
+    pthread_t inmsg_tid, outmsg_tid;
+    pthread_attr_t inmsg_attr, outmsg_attr;
+
     pthread_t *customer_tid_arr = NULL;
     pthread_attr_t *customer_attr_arr = NULL;
     customer_opt_t *customer_opt_arr = NULL;
+    // Array of flags to tell which threads are joinable
     bool *customer_terminated_arr = NULL;
+
     pthread_t *cashier_tid_arr = NULL;
     pthread_attr_t *cashier_attr_arr = NULL;
-    // Array of flags to tell which threads are joinable
+    pthread_mutex_t *cashier_mtx_arr = NULL;
     cashier_opt_t *cashier_opt_arr = NULL;
+    bool *cashier_isopen_arr = NULL;
     pthread_mutex_t customer_count_mtx;
 
     // Values read from config file with defaults
@@ -186,31 +154,46 @@ int main(int argc, char const* argv[]) {
     size_t cust_batch = DEFAULT_CUST_BATCH;
 
     // ========== Data initialization ==========
-
-    if(pthread_attr_init(&sig_attr) < 0)
+    if(pthread_attr_init(&outmsg_attr) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
-    if(pthread_attr_setdetachstate(&sig_attr, PTHREAD_CREATE_DETACHED) < 0)
-        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
-    if(pthread_attr_init(&msg_attr) < 0)
+    if(pthread_attr_init(&inmsg_attr) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
 
-    sigemptyset(&sigset);
-    sigaddset(&sigset, SIGHUP);
-    sigaddset(&sigset, SIGQUIT);
-    sigaddset(&sigset, SIGINT);
-    // Ignore SIGPIPE in case the server socket closes
-    // earlier.
-    sigaddset(&sigset, SIGPIPE);
-    if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) < 0)
-        ERR_SET_GOTO(main_exit_1, err, "Masking signals in main thread\n");
-
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = signal_handler;
+   
     outmsgqueue = conc_lqueue_init();
     inmsgqueue = conc_lqueue_init();
 
-    // ========== Parse configuration file ==========
-    // TODO get config file from arg
+    SYSCALL_SET_GOTO(err, sigaction(SIGINT, &act, NULL),
+                    "reg signal\n", err, main_exit_1);
 
+    SYSCALL_SET_GOTO(err, sigaction(SIGQUIT, &act, NULL),
+                    "reg signal\n", err, main_exit_1);
+
+    SYSCALL_SET_GOTO(err, sigaction(SIGHUP, &act, NULL),
+                    "reg signal\n", err, main_exit_1);
+    
+    act.sa_handler = SIG_IGN;
+    SYSCALL_SET_GOTO(err, sigaction(SIGPIPE, &act, NULL),
+                    "reg signal\n", err, main_exit_1);
+
+    // ========== Parse configuration file ==========
+    int c;
     strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX);
+    
+    while((c = getopt(argc, argv, "c:")) != -1) {
+        switch(c) {
+            case 'c':
+                strncpy(config_path, optarg, PATH_MAX);
+            break;
+            case '?':
+                ERR("Unrecognized option: '-%c'\n", optopt);
+                goto main_exit_1;
+            break;
+        } 
+    }
+
     if(access(config_path, F_OK) == -1) {
         err = errno;
         ERR_SET_GOTO(main_exit_1, err, "Could not open config file %s: %s",
@@ -260,7 +243,7 @@ int main(int argc, char const* argv[]) {
         ini_free(config);
         goto main_exit_1;
     }
-    ini_sget(config, NULL, "product_cap", "%ld", &product_cap);
+    ini_sget(config, NULL, "product_cap", "%d", &product_cap);
     if(product_cap <= 0) {
         ERR("product_cap must be a positive integer\n");
         ini_free(config);
@@ -275,15 +258,6 @@ int main(int argc, char const* argv[]) {
     }
 
     ini_free(config);
-
-   // ========== Spawn signal handler thread  ==========
-    
-    signal_worker_opt_t signal_worker_opt = {
-        sigset,
-    };
-    if(pthread_create(&sig_tid, &sig_attr,
-                      signal_worker, &signal_worker_opt) < 0)
-        ERR_SET_GOTO(main_exit_1, err, "Creating signal handler thread\n");
 
     // ========== Connect to server process  ==========
     
@@ -302,67 +276,97 @@ int main(int argc, char const* argv[]) {
         conn_attempt_count++;
         msleep(conn_attempt_delay);
     }
+
     // Set socket to nonblocking
     // SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd, F_GETFL),
     //                  "getting sock_flags\n", err, main_exit_1);
     // SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd, F_SETFL, sock_flags|O_NONBLOCK),
     //                  "setting socket flags\n", err, main_exit_1);
-    
-    // ========== Initialize message handler threads and queue ==========
 
-    msg_worker_opt_t msg_opt = {
-        sigset,
-        sock_fd,
-        outmsgqueue,
-        inmsgqueue
-    };
-    if(pthread_create(&msg_tid, &msg_attr,
-                      msg_worker, &msg_opt) < 0)
-        ERR_SET_GOTO(main_exit_1, err, "Creating msg worker\n");
-    
     LOG_NOTICE("Waiting for server connection\n");
-    while(!server_connected) {
-        if(should_quit) goto main_exit_1;
-        msleep(MSG_WORKER_POLL_TIME);
+
+    // ========== Initial connection exchange  ==========
+
+    msgbuf = malloc(MSG_SIZE);
+    memset(msgbuf, 0, MSG_SIZE);
+    strncpy(msgbuf, HELLO_BOSS, MSG_SIZE);
+    SYSCALL_SET_GOTO(sent, sendn(sock_fd, msgbuf, MSG_SIZE, 0),
+                     "sending header\n", err, main_exit_1);
+    memset(msgbuf, 0, MSG_SIZE);
+    snprintf(msgbuf, MSG_SIZE, "%d\n", getpid());
+    
+    SYSCALL_SET_GOTO(sent, sendn(sock_fd, msgbuf, MSG_SIZE, 0),
+                     "sending pid\n", err, main_exit_1);
+
+    SYSCALL_SET_GOTO(received, recvn(sock_fd, statbuf, MSG_SIZE, 0), 
+                     "getting conn confirm\n", err, main_exit_1);
+
+    if (strncmp(statbuf, MSG_CONN_ESTABLISHED, MSG_SIZE) != 0) {
+        ERR("Could not connect");
+        goto main_exit_1;
     }
+
+    memset(statbuf, 0, MSG_SIZE);
+    free(msgbuf);
     LOG_NOTICE("Connection Established\n");
+
 
     // ========== Creating cashiers. Only 1 is open at startup  ==========
 
-    cashier_tid_arr = malloc(sizeof(pthread_t) * cust_cap);
-    cashier_attr_arr = malloc(sizeof(pthread_attr_t) * cust_cap);
-    cashier_opt_arr = malloc(sizeof(cashier_opt_t) * cust_cap);
+    cashier_tid_arr = malloc(sizeof(pthread_t) * num_cashiers);
+    cashier_attr_arr = malloc(sizeof(pthread_attr_t) * num_cashiers);
+    cashier_opt_arr = malloc(sizeof(cashier_opt_t) * num_cashiers);
+    cashier_mtx_arr = malloc(sizeof(pthread_mutex_t) * num_cashiers);
+    cashier_isopen_arr = malloc(sizeof(bool) * num_cashiers);
+
     for(size_t i = 0; i < num_cashiers; i++) {
         pthread_attr_init(&cashier_attr_arr[i]);
-        cashier_init(&cashier_opt_arr[i], i,
-                     sigset, outmsgqueue,
-                     cashier_poll_time, time_per_prod);
-        if (i == 0) *(cashier_opt_arr[i].state) = OPEN;
-        if(pthread_create(&cashier_tid_arr[i], &cashier_attr_arr[i], 
-                          cashier_worker, &cashier_opt_arr[i]) < 0)
-            ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
+        if((err = pthread_mutex_init(&cashier_mtx_arr[i], NULL)) != 0)
+            ERR_SET_GOTO(main_exit_2, err, "Allocating Attr %s",
+            strerror(err));
+        if((err = pthread_attr_init(&cashier_attr_arr[i])) != 0)
+            ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s",
+            strerror(err));
+
+        cashier_isopen_arr[i] = false;
     }
+
+    // Spawn first cashier thread
+    cashier_isopen_arr[0] = true;
+    cashier_init(&cashier_opt_arr[0], 0,
+                 &cashier_isopen_arr[0],
+                 &cashier_mtx_arr[0],
+                 outmsgqueue,
+                 cashier_poll_time, time_per_prod);
+    if(pthread_create(&cashier_tid_arr[0], &cashier_attr_arr[0], 
+                      cashier_worker, &cashier_opt_arr[0]) < 0)
+        ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
 
 
     // ========== Creating first customers ==========
+
     if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0)
         ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", strerror(err));
 
     customer_tid_arr = malloc(sizeof(pthread_t) * cust_cap);
     customer_attr_arr = malloc(sizeof(pthread_attr_t) * cust_cap);
     customer_opt_arr = malloc(sizeof(customer_opt_t) * cust_cap);
-    customer_terminated_arr = malloc(cust_cap);
+    customer_terminated_arr = malloc(sizeof(bool) * cust_cap);
 
     for(size_t i = 0; i < cust_cap; i++) {
         pthread_attr_init(&customer_attr_arr[i]);
         customer_terminated_arr[i] = false;
         customer_init(&customer_opt_arr[i], i,
-                      sigset,
                       &customer_count,
-                      &customer_count_mtx, cashier_opt_arr,
+                      &customer_count_mtx,
+                      cashier_opt_arr,
+                      cashier_isopen_arr,
+                      cashier_mtx_arr,
                       &customer_terminated_arr[i],
-                      max_shopping_time, product_cap, 
-                      num_cashiers);
+                      max_shopping_time,
+                      product_cap, 
+                      num_cashiers,
+                      outmsgqueue);
         
         if(pthread_create(&customer_tid_arr[i], &customer_attr_arr[i], 
                           customer_worker, &customer_opt_arr[i]) < 0)
@@ -372,20 +376,48 @@ int main(int argc, char const* argv[]) {
         MTX_UNLOCK_DIE(&customer_count_mtx);
     }
 
+    // ========== Creating message handler threads ==========
+
+    msg_worker_opt_t outmsg_opt = {
+        sock_fd,
+        outmsgqueue
+    };
+    msg_worker_opt_t inmsg_opt = {
+        sock_fd,
+        inmsgqueue,
+    };
+
+    if(pthread_create(&outmsg_tid, &outmsg_attr,
+                      outmsg_worker, (void*) &outmsg_opt) < 0) {
+        ERR_SET_GOTO(main_exit_1, err, "Creating msg worker\n");
+    }
+    if(pthread_create(&inmsg_tid, &inmsg_attr,
+                      inmsg_worker, (void*) &inmsg_opt) < 0) {
+        ERR_SET_GOTO(main_exit_1, err, "Creating msg worker\n");
+    }
+
+
+
     // ========== Main loop ==========
 
     while(1) {
         if (should_quit) goto main_exit_3;
+
         // Check if the number of customers has got below C - E
         MTX_LOCK_DIE(&customer_count_mtx);
+        LOG_DEBUG("Customer count = %d\n", customer_count);
+
+        // If the process received SIGHUP, wait until there are
+        // No customers left then exit gently
         if (should_close) {
            if(customer_count == 0) {
                 MTX_UNLOCK_DIE(&customer_count_mtx);
                 goto main_exit_3;
            }
         }
+        // Otherwise let cust_batch customers in
         else if((cust_cap - customer_count) > cust_batch) {
-            LOG_DEBUG("Letting more customers in\n");
+            // LOG_DEBUG("Letting more customers in\n");
             for(int i = 0; i < cust_cap; i++) {
             if(customer_terminated_arr[i]) {
                 customer_terminated_arr[i] = false;
@@ -394,23 +426,167 @@ int main(int argc, char const* argv[]) {
                 pthread_attr_destroy(&customer_attr_arr[i]);
                 pthread_attr_init(&customer_attr_arr[i]);
                 customer_init(&customer_opt_arr[i], i, 
-                              sigset,
                               &customer_count,
-                              &customer_count_mtx, cashier_opt_arr,
+                              &customer_count_mtx,
+                              cashier_opt_arr,
+                              cashier_isopen_arr,
+                              cashier_mtx_arr,
                               &customer_terminated_arr[i],
-                              max_shopping_time, product_cap,
-                              num_cashiers);
+                              max_shopping_time,
+                              product_cap,
+                              num_cashiers,
+                              outmsgqueue);
                 if(pthread_create(&customer_tid_arr[i],
                                   &customer_attr_arr[i], 
                                   customer_worker,
                                   &customer_opt_arr[i]) < 0)
-                ERR_SET_GOTO(main_exit_2, err,
+                ERR_SET_GOTO(main_exit_3, err,
                                    "Creating customer worker\n");
                 customer_count++;
             }
             }
         }
         MTX_UNLOCK_DIE(&customer_count_mtx);
+
+        // ========== Handle inbound messages ==========
+        
+        if ((err = conc_lqueue_dequeue_nonblock(inmsgqueue,
+                                                (void*) &msgbuf)) == 0) {
+            if(should_quit) goto main_exit_3;
+            
+            // ========== Customer Exit Confirmation  ==========
+
+            if(strncmp(msgbuf, MSG_CUST_HEADER,
+                       strlen(MSG_CUST_HEADER)) == 0) {
+                char *remaining = NULL;
+                long cust_id = 0; 
+                errno = 0;
+                cust_id = strtol(&msgbuf[strlen(MSG_CUST_HEADER)],
+                       &remaining, 10); 
+                if(cust_id < 0 || cust_id >= cust_cap) {
+                    LOG_DEBUG("Received invalid customer ID: %ld\n", cust_id);
+                    memset(msgbuf, 0, MSG_SIZE);
+                    continue;
+                } else if (msgbuf == remaining) {
+                    LOG_DEBUG("Malformed message: no cust ID\n");
+                    memset(msgbuf, 0, MSG_SIZE);
+                    continue;
+                }
+                // Remove spaces
+                while(*remaining == ' ') remaining++;
+
+                if(strncmp(remaining, MSG_GET_OUT,
+                           strlen(MSG_GET_OUT)) == 0) {
+                    MTX_LOCK_DIE(customer_opt_arr[cust_id].state_mtx);
+                    *(customer_opt_arr[cust_id].state) = CAN_EXIT;
+                    COND_SIGNAL_DIE(customer_opt_arr[cust_id]
+                                    .state_change_event);
+                    MTX_UNLOCK_DIE(customer_opt_arr[cust_id].state_mtx);
+                }
+
+            } else if (strncmp(msgbuf, MSG_CASH_HEADER,
+                               strlen(MSG_CASH_HEADER)) == 0) {
+
+                // ========== Cashier Opening/Closing ==========
+
+                LOG_DEBUG("Received a cash operation\n");
+                                  
+                char *remaining = NULL;
+                long cash_id = 0; 
+                errno = 0;
+                cash_id = strtol(&msgbuf[strlen(MSG_CASH_HEADER)],
+                       &remaining, 10); 
+                if(cash_id < 0 || cash_id >= num_cashiers) {
+                    LOG_DEBUG("Received invalid cash ID: %ld\n", cash_id);
+                    memset(msgbuf, 0, MSG_SIZE);
+                    continue;
+                } else if (msgbuf == remaining) {
+                    LOG_DEBUG("Malformed message: no cash ID\n");
+                    memset(msgbuf, 0, MSG_SIZE);
+                    continue;
+                }
+                // Remove spaces
+                while(*remaining == ' ') remaining++;
+                if(strncmp(remaining, MSG_OPEN_CASH,
+                           strlen(MSG_OPEN_CASH)) == 0) {
+
+                    // ========== Cashier Opening  ==========
+                     
+                    MTX_LOCK_DIE(&cashier_mtx_arr[cash_id]);
+                    if(cashier_isopen_arr[cash_id]) {
+                        ERR("Cashier %ld already open\n",
+                                  cash_id);
+                        MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
+                        continue;
+                    }
+                    cashier_isopen_arr[cash_id] = true;
+                    MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
+
+                    // Spawn first cashier thread
+                    LOG_DEBUG("Opening cashier %ld\n", cash_id);
+
+                    cashier_init(&cashier_opt_arr[cash_id], cash_id,
+                                 &cashier_isopen_arr[cash_id],
+                                 &cashier_mtx_arr[cash_id],
+                                 outmsgqueue,
+                                 cashier_poll_time, time_per_prod);
+                    if(pthread_create(&cashier_tid_arr[cash_id],
+                                      &cashier_attr_arr[cash_id], 
+                                      cashier_worker,
+                                      &cashier_opt_arr[cash_id]) < 0)
+                    ERR_SET_GOTO(main_exit_2, err,
+                                 "Creating cashier worker\n");
+
+
+                } else if(strncmp(remaining, MSG_CLOSE_CASH,
+                           strlen(MSG_CLOSE_CASH)) == 0) {
+
+                    // ========== Cashier Closing ==========
+                    MTX_LOCK_DIE(&cashier_mtx_arr[cash_id]);
+                    if(cashier_isopen_arr[cash_id] == false) {
+                        ERR("Cashier already closed %ld\n",
+                                  cash_id);
+                        MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
+                        continue;
+                    }
+                    cashier_isopen_arr[cash_id] = false;
+                    MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
+
+                    LOG_DEBUG("Closing cashier %ld\n", cash_id);
+
+                    // Reschedule customers
+                    customer_opt_t *curr_cust = NULL;
+                    while((err = conc_lqueue_dequeue_nonblock(
+                            cashier_opt_arr[cash_id].custqueue,
+                            (void*) &curr_cust)) == 0) {
+                        customer_reschedule(curr_cust);
+                    } 
+                    if (err != ELQUEUEEMPTY) {
+                        ERR("Rescheduling customers\n"); 
+                        free(msgbuf);
+                        goto main_exit_3;
+                    }
+
+                    if(pthread_join(cashier_tid_arr[cash_id], NULL) < 0) {
+                       ERR("Joining cashier thread %ld\n", cash_id);   
+                       free(msgbuf);
+                       goto main_exit_3;
+                    }
+
+                    
+                    cashier_destroy(&cashier_opt_arr[cash_id]);
+
+                } else {
+                    LOG_DEBUG("Unrecognized message\n");
+                }
+            } else {
+                LOG_DEBUG("Unrecognized message\n");
+            }
+            free(msgbuf);
+        }
+
+        
+
         msleep(supermarket_poll_time);
     }
 
@@ -429,9 +605,11 @@ int main(int argc, char const* argv[]) {
         LOG_DEBUG("Joining cashier threads\n");
         for(int i = 0; i < num_cashiers; i++) {
             LOG_DEBUG("Joining cashier thread %d\n", i);
-            pthread_join(cashier_tid_arr[i], NULL);
-            cashier_destroy(&cashier_opt_arr[i]);
-            pthread_attr_destroy(&cashier_attr_arr[i]);
+            if(cashier_isopen_arr[i]) {
+                pthread_join(cashier_tid_arr[i], NULL);
+                cashier_destroy(&cashier_opt_arr[i]);
+                pthread_attr_destroy(&cashier_attr_arr[i]);
+            }
         }
         free(customer_terminated_arr);
         free(customer_tid_arr);
@@ -444,8 +622,6 @@ int main(int argc, char const* argv[]) {
         LOG_DEBUG("Closing message queue\n");
         conc_lqueue_close(outmsgqueue);
         conc_lqueue_close(inmsgqueue);
-        LOG_DEBUG("Joining message handler worker\n");
-        pthread_join(msg_tid, NULL);
     main_exit_1:
         LOG_DEBUG("Final cleanups... \n");
         conc_lqueue_destroy(outmsgqueue);

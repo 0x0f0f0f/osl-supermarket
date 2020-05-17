@@ -24,7 +24,8 @@ int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val);
 /* Get an item from the queue doing appropriate locking and signaling */
 int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val);
 
-/* Get an item from the queue but do not wait if empty */
+/* Get an item from the queue but do not wait if empty
+ * Return ELQUEUECLOSED if closed or ELQUEUEEMPTY if empty */
 int conc_lqueue_dequeue_nonblock(conc_lqueue_t* cq, void** val);
 
 /* Is a concurrent queue closed? */
@@ -40,5 +41,8 @@ long conc_lqueue_getsize(conc_lqueue_t* cq);
 conc_lqueue_t* conc_lqueue_init();
 
 void conc_lqueue_destroy(conc_lqueue_t* cq);
+
+/* Destroy the queue but do not destroy the contents */
+void conc_lqueue_free(conc_lqueue_t* cq);
 
 #endif

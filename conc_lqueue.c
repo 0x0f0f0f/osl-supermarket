@@ -134,3 +134,13 @@ void conc_lqueue_destroy(conc_lqueue_t* cq) {
     free(cq);
     return;
 }
+void conc_lqueue_free(conc_lqueue_t* cq) {
+    if (cq == NULL) return;
+    if(cq->mutex) pthread_mutex_destroy(cq->mutex);
+    if(cq->produce_event) pthread_cond_destroy(cq->produce_event);
+    free(cq->mutex);
+    free(cq->produce_event);
+    lqueue_free(cq->q);
+    free(cq);
+    return;
+}

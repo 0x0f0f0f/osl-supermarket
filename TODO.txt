@@ -8,13 +8,18 @@
 [ ] No leaks in supermarket
 [ ] analysis script
 [ ] Log stats
-[ ] Termina manager come supermarket con var globale
+[X] Termina manager come supermarket con var globale
 [X] Poll time in cashier threads to send num of enqueued custs to manager 
-[ ] Handle cashier and customer messages in manager (use strncomp to get header) 
-[ ] Apri e chiudi casse
+[X] Handle cashier and customer messages in manager (use strncomp to get header) 
+[X] Apri e chiudi casse
 [ ] Move strerror to strerror_r;  
 [X] SIGQUIT management; 
 [X] Correct SIGHUP management
 [X] Fai rientrare clienti
-[ ] config as argument
+[X] config as argument
 [ ] Synchronization primitives that goto labels on fail
+[X] Termina thread cassiere alla chiusura da direttore
+[ ] Fixa SIGINT che muore in supermarket
+[ ] Usa blocking IO il più poossibiel
+[X] Customer ask out
+[ ] Reschedule customers on cashier close
