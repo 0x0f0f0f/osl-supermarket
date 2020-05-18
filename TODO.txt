@@ -23,5 +23,5 @@
 [ ] Usa blocking IO il più poossibiel
 [X] Customer ask out
 [X] Reschedule customers on cashier close
-[ ] Usa calloc invece che malloc
+[X] Usa calloc invece che malloc
 [X] Send cashier info alltogether

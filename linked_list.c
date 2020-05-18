@@ -5,7 +5,7 @@
 
 
 node_t* list_insert_head(node_t* head, void* val) {
-    node_t* new = malloc(sizeof(node_t));
+    node_t* new = calloc(1, sizeof(node_t));
     new->val = val;
     new->next = head;
     return new;
@@ -13,7 +13,7 @@ node_t* list_insert_head(node_t* head, void* val) {
 
 node_t* list_insert_tail(node_t* head, void* val) {
     if (head == NULL) {
-        head = malloc(sizeof(node_t));
+        head = calloc(1, sizeof(node_t));
         head->val = val;
         head->next = NULL;
         return head;
@@ -22,7 +22,7 @@ node_t* list_insert_tail(node_t* head, void* val) {
         while(curr->next != NULL) {
             curr = curr->next;
         }
-        curr->next = malloc(sizeof(node_t));
+        curr->next = calloc(1, sizeof(node_t));
         curr->next->val = val;
         curr->next->next = NULL;
         return head;

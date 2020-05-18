@@ -33,7 +33,7 @@ int lqueue_dequeue(lqueue_t* q, void** val) {
 }
 
 lqueue_t* lqueue_init () {
-    lqueue_t* q = malloc(sizeof(lqueue_t));
+    lqueue_t* q = calloc(1, sizeof(lqueue_t));
     if(q == NULL) return q;
     q->head = NULL;
     q->closed = 0;

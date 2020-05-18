@@ -91,15 +91,15 @@ int conc_lqueue_close(conc_lqueue_t* cq) {
 }
 
 conc_lqueue_t* conc_lqueue_init() {
-    conc_lqueue_t* cq = malloc(sizeof(conc_lqueue_t));
+    conc_lqueue_t* cq = calloc(1, sizeof(conc_lqueue_t));
     if(cq == NULL) return cq;
     cq->q = lqueue_init();
     if(cq->q == NULL) {
         free(cq);
         return NULL;
     } 
-    cq->mutex = malloc(sizeof(pthread_mutex_t));
-    cq->produce_event = malloc(sizeof(pthread_cond_t));
+    cq->mutex = calloc(1, sizeof(pthread_mutex_t));
+    cq->produce_event = calloc(1, sizeof(pthread_cond_t));
     pthread_mutex_init(cq->mutex, NULL);
     pthread_cond_init(cq->produce_event, NULL);
 
