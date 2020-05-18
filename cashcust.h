@@ -20,7 +20,6 @@ typedef struct cashier_opt_s {
     bool *isopen;
     pthread_mutex_t *state_mtx;
     // Various time units
-    long cashier_poll_time;
     long time_per_prod;
 } cashier_opt_t;
 
@@ -59,19 +58,27 @@ typedef struct customer_opt_s {
     cashier_opt_t *cashier_arr;
     bool *cashier_isopen_arr;
     pthread_mutex_t *cashier_mtx_arr;
-    size_t cashier_arr_size;
+    int cashier_arr_size;
     conc_lqueue_t *outmsgqueue;
 } customer_opt_t;
 
-// ========== Worker Function Declarations ==========
+typedef struct cashier_poll_opt_s {
+    cashier_opt_t *cashier_arr;
+    pthread_mutex_t *cashier_mtx_arr;
+    bool *cashier_isopen_arr;
+    int cashier_arr_size;
+    long cashier_poll_time;
+} cashier_poll_opt_t;
 
+// ========== Worker Function Declarations ==========
+void* cashier_poll_worker(void* arg);
 void* cashier_worker(void* arg);
 void* customer_worker(void* arg);
 void cashier_init(cashier_opt_t *c, int id,
                   bool *isopen,
                   pthread_mutex_t *state_mtx,
                   conc_lqueue_t *outq,
-                  long cashier_poll_time, long time_per_prod);
+                  long time_per_prod);
 
 void customer_init(customer_opt_t *c, int id,
                    int *customer_count,
@@ -82,7 +89,7 @@ void customer_init(customer_opt_t *c, int id,
                    bool *customer_terminated,
                    long max_shopping_time, 
                    int product_cap,
-                   size_t cashier_arr_size,
+                   int cashier_arr_size,
                    conc_lqueue_t *outmsgqueue
 );
 

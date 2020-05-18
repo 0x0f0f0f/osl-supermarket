@@ -40,7 +40,7 @@ typedef struct msg_worker_opt_s {
 
 void* outmsg_worker(void* arg) {
     msg_worker_opt_t opt = *(msg_worker_opt_t *)arg;
-    char *msgbuf = malloc(MSG_SIZE);
+    char *msgbuf = NULL;
     ssize_t sent;
     int err;
 
@@ -96,8 +96,7 @@ void* inmsg_worker(void* arg) {
             goto inmsg_worker_exit;  
         } 
         LOG_DEBUG("Received message: %s", statbuf);
-        msgbuf = malloc(MSG_SIZE);
-        memset(msgbuf, 0, MSG_SIZE);
+        msgbuf = calloc(1, MSG_SIZE);
         strncpy(msgbuf, statbuf, MSG_SIZE);
         if(conc_lqueue_enqueue(opt.msgqueue, (void*) msgbuf) != 0) {
             LOG_DEBUG("Error while enqueueing message\n");
@@ -141,6 +140,11 @@ int main(int argc, char* const argv[]) {
     bool *cashier_isopen_arr = NULL;
     pthread_mutex_t customer_count_mtx;
 
+    pthread_t cashier_poller_tid;
+    pthread_attr_t cashier_poller_attr;
+    cashier_poll_opt_t *cashier_poller_opt;
+    
+
     // Values read from config file with defaults
     int max_conn_attempts = DEFAULT_MAX_CONN_ATTEMPTS;
     int product_cap = DEFAULT_PRODUCT_CAP;
@@ -149,7 +153,7 @@ int main(int argc, char* const argv[]) {
     long time_per_prod = DEFAULT_TIME_PER_PROD;
     long max_shopping_time = DEFAULT_MAX_SHOPPING_TIME;
     long supermarket_poll_time = DEFAULT_SUPERMARKET_POLL_TIME;
-    size_t num_cashiers = DEFAULT_NUM_CASHIERS;
+    int num_cashiers = DEFAULT_NUM_CASHIERS;
     size_t cust_cap = DEFAULT_CUST_CAP;
     size_t cust_batch = DEFAULT_CUST_BATCH;
 
@@ -157,6 +161,8 @@ int main(int argc, char* const argv[]) {
     if(pthread_attr_init(&outmsg_attr) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
     if(pthread_attr_init(&inmsg_attr) < 0)
+        ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
+    if(pthread_attr_init(&cashier_poller_attr) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
 
     memset(&act, 0, sizeof(act));
@@ -213,7 +219,7 @@ int main(int argc, char* const argv[]) {
         ini_free(config);
         goto main_exit_1;
     }
-    ini_sget(config, NULL, "num_cashiers", "%zu", &num_cashiers); 
+    ini_sget(config, NULL, "num_cashiers", "%d", &num_cashiers); 
     if(num_cashiers <= 0) {
         ERR("num_cashiers must be a positive integer\n");
         ini_free(config);
@@ -287,7 +293,7 @@ int main(int argc, char* const argv[]) {
 
     // ========== Initial connection exchange  ==========
 
-    msgbuf = malloc(MSG_SIZE);
+    msgbuf = calloc(1, MSG_SIZE);
     memset(msgbuf, 0, MSG_SIZE);
     strncpy(msgbuf, HELLO_BOSS, MSG_SIZE);
     SYSCALL_SET_GOTO(sent, sendn(sock_fd, msgbuf, MSG_SIZE, 0),
@@ -313,11 +319,11 @@ int main(int argc, char* const argv[]) {
 
     // ========== Creating cashiers. Only 1 is open at startup  ==========
 
-    cashier_tid_arr = malloc(sizeof(pthread_t) * num_cashiers);
-    cashier_attr_arr = malloc(sizeof(pthread_attr_t) * num_cashiers);
-    cashier_opt_arr = malloc(sizeof(cashier_opt_t) * num_cashiers);
-    cashier_mtx_arr = malloc(sizeof(pthread_mutex_t) * num_cashiers);
-    cashier_isopen_arr = malloc(sizeof(bool) * num_cashiers);
+    cashier_tid_arr = calloc(num_cashiers, sizeof(pthread_t));
+    cashier_attr_arr = calloc(num_cashiers, sizeof(pthread_attr_t));
+    cashier_opt_arr = calloc(num_cashiers, sizeof(cashier_opt_t));
+    cashier_mtx_arr = calloc(num_cashiers, sizeof(pthread_mutex_t));
+    cashier_isopen_arr = calloc(num_cashiers, sizeof(bool));
 
     for(size_t i = 0; i < num_cashiers; i++) {
         pthread_attr_init(&cashier_attr_arr[i]);
@@ -330,6 +336,7 @@ int main(int argc, char* const argv[]) {
 
         cashier_isopen_arr[i] = false;
     }
+    
 
     // Spawn first cashier thread
     cashier_isopen_arr[0] = true;
@@ -337,21 +344,31 @@ int main(int argc, char* const argv[]) {
                  &cashier_isopen_arr[0],
                  &cashier_mtx_arr[0],
                  outmsgqueue,
-                 cashier_poll_time, time_per_prod);
+                 time_per_prod);
     if(pthread_create(&cashier_tid_arr[0], &cashier_attr_arr[0], 
                       cashier_worker, &cashier_opt_arr[0]) < 0)
         ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
+    
+    cashier_poller_opt = calloc(1, sizeof(cashier_poll_opt_t));
+    cashier_poller_opt->cashier_arr = cashier_opt_arr;
+    cashier_poller_opt->cashier_arr_size = num_cashiers;
+    cashier_poller_opt->cashier_poll_time = cashier_poll_time;
+    cashier_poller_opt->cashier_mtx_arr = cashier_mtx_arr;
+    cashier_poller_opt->cashier_isopen_arr = cashier_isopen_arr;    if(pthread_create(&cashier_poller_tid, &cashier_poller_attr,
 
-
+                      cashier_poll_worker, cashier_poller_opt) < 0)
+        ERR_SET_GOTO(main_exit_2, err, "Creating cashier poll worker\n");
+                      
+    
     // ========== Creating first customers ==========
 
     if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0)
         ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", strerror(err));
 
-    customer_tid_arr = malloc(sizeof(pthread_t) * cust_cap);
-    customer_attr_arr = malloc(sizeof(pthread_attr_t) * cust_cap);
-    customer_opt_arr = malloc(sizeof(customer_opt_t) * cust_cap);
-    customer_terminated_arr = malloc(sizeof(bool) * cust_cap);
+    customer_tid_arr = calloc(cust_cap, sizeof(pthread_t));
+    customer_attr_arr = calloc(cust_cap, sizeof(pthread_attr_t));
+    customer_opt_arr = calloc(cust_cap, sizeof(customer_opt_t));
+    customer_terminated_arr = calloc(cust_cap, sizeof(bool));
 
     for(size_t i = 0; i < cust_cap; i++) {
         pthread_attr_init(&customer_attr_arr[i]);
@@ -405,12 +422,13 @@ int main(int argc, char* const argv[]) {
 
         // Check if the number of customers has got below C - E
         MTX_LOCK_DIE(&customer_count_mtx);
-        LOG_DEBUG("Customer count = %d\n", customer_count);
+        // LOG_DEBUG("Customer count = %d\n", customer_count);
 
         // If the process received SIGHUP, wait until there are
         // No customers left then exit gently
         if (should_close) {
            if(customer_count == 0) {
+                should_quit = 1;
                 MTX_UNLOCK_DIE(&customer_count_mtx);
                 goto main_exit_3;
            }
@@ -529,7 +547,7 @@ int main(int argc, char* const argv[]) {
                                  &cashier_isopen_arr[cash_id],
                                  &cashier_mtx_arr[cash_id],
                                  outmsgqueue,
-                                 cashier_poll_time, time_per_prod);
+                                 time_per_prod);
                     if(pthread_create(&cashier_tid_arr[cash_id],
                                       &cashier_attr_arr[cash_id], 
                                       cashier_worker,

@@ -20,8 +20,7 @@ long cashier_poll(cashier_opt_t *this) {
     char *msgbuf = NULL;
     LOG_NEVER("Cashier %d polling...\n", this->id);
     enqueued_customers = conc_lqueue_getsize(this->custqueue);
-    msgbuf = malloc(MSG_SIZE);
-    memset(msgbuf, 0, MSG_SIZE);
+    msgbuf = calloc(1, MSG_SIZE);
     snprintf(msgbuf, MSG_SIZE, "%s %d %s %ld\n",
         MSG_CASH_HEADER, this->id,
         MSG_QUEUE_SIZE, enqueued_customers);
@@ -45,13 +44,12 @@ void cashier_init(cashier_opt_t *c, int id,
                   bool *isopen,
                   pthread_mutex_t *state_mtx,
                   conc_lqueue_t *outq,
-                  long cashier_poll_time, long time_per_prod) {
+                  long time_per_prod) {
     c->id = id;
     c->custqueue = conc_lqueue_init(c->custqueue);
     c->outmsgqueue = outq;
     c->isopen = isopen;
     c->state_mtx = state_mtx;
-    c->cashier_poll_time = cashier_poll_time;
     c->time_per_prod = time_per_prod;
     pthread_mutex_init(c->state_mtx, NULL);
 }
@@ -60,15 +58,32 @@ void cashier_destroy(cashier_opt_t *c) {
     conc_lqueue_free(c->custqueue);
 }
 
+void* cashier_poll_worker(void* arg) {
+    cashier_poll_opt_t *this = (cashier_poll_opt_t *) arg;
+    bool poll_curr = false;
+    while(!should_quit) {
+        for (int i = 0; i < this->cashier_arr_size; i++) {
+            poll_curr = false;
+            MTX_LOCK_EXT(&this->cashier_mtx_arr[i]);
+            if(this->cashier_isopen_arr[i]) poll_curr = true;
+            MTX_UNLOCK_EXT(&this->cashier_mtx_arr[i]);
+
+            if(poll_curr)
+                cashier_poll(&this->cashier_arr[i]);
+        }
+        msleep(this->cashier_poll_time);
+    }
+
+    pthread_exit(NULL);
+}
+
 void* cashier_worker(void* arg) {
     cashier_opt_t this = *(cashier_opt_t *) arg;
     customer_opt_t *curr_cust = NULL;
     // Time needed to initially process a customer,
     long start_time,
-         poll_time,
-         pay_time,
+         pay_time;
          // Number of enqueued customers
-         enqueued_customers;
     char *msgbuf = NULL;
     int err = 0;
 
@@ -80,10 +95,8 @@ void* cashier_worker(void* arg) {
 
     start_time = RAND_RANGE(CASHIER_START_TIME_MIN,
                             CASHIER_START_TIME_MAX); 
-    poll_time = this.cashier_poll_time;
 
-    msgbuf = malloc(MSG_SIZE);
-    memset(msgbuf, 0, MSG_SIZE);
+    msgbuf = calloc(1, MSG_SIZE);
     snprintf(msgbuf, MSG_SIZE, "%s %d %s\n",
              MSG_CASH_HEADER, this.id, MSG_CASH_OPENED);
 
@@ -111,37 +124,17 @@ void* cashier_worker(void* arg) {
         if((err = conc_lqueue_dequeue_nonblock(this.custqueue, 
                                         (void *)&curr_cust)) == 0) {
             customer_set_state(curr_cust, PAYING);
-
             pay_time = start_time + (curr_cust->products * 
                 this.time_per_prod);
-
-            if(pay_time > poll_time) {
-                for(int i = 0; i < pay_time / poll_time; i++) {
-                    // Number of polls to do WHILE paying
-                    enqueued_customers = cashier_poll(&this);
-                    msleep(poll_time);
-                }
-                // Sleep for the remaining pay time
-                msleep(pay_time % poll_time);
-                customer_set_state(curr_cust, TERMINATED);
-            } else {
-                // pay_time < poll_time
-                enqueued_customers = cashier_poll(&this);
-                msleep(pay_time);
-                customer_set_state(curr_cust, TERMINATED);
-                msleep(poll_time - pay_time);
-            }
+            msleep(pay_time);
+            customer_set_state(curr_cust, TERMINATED);
         } else if(err == ELQUEUEEMPTY) {
-            // No customer is enqueued
-            enqueued_customers = cashier_poll(&this);
-
             if (should_close) {
                 // If the supermarket is gently shutting down, exit the thread
                 // when no more customers are in line (happens on SIGHUP)
                 LOG_DEBUG("Cashier %d shutting down...\n", this.id);
                 goto cashier_worker_exit;
             }
-            msleep(poll_time);
         } else {
             LOG_CRITICAL("Unknown Error in cashier %d queue", this.id);
             goto cashier_worker_exit_instantly;
@@ -149,8 +142,7 @@ void* cashier_worker(void* arg) {
     }
 
 cashier_worker_exit:
-    msgbuf = malloc(MSG_SIZE);
-    memset(msgbuf, 0, MSG_SIZE);
+    msgbuf = calloc(1, MSG_SIZE);
     snprintf(msgbuf, MSG_SIZE, "%s %d %s\n",
              MSG_CASH_HEADER, this.id, MSG_CASH_CLOSED);
 
@@ -174,15 +166,15 @@ void customer_init(customer_opt_t *c, int id,
                    bool *customer_terminated,
                    long max_shopping_time, 
                    int product_cap,
-                   size_t cashier_arr_size,
+                   int cashier_arr_size,
                    conc_lqueue_t *outmsgqueue) {
     c->id = id;
     c->buying_time = RAND_RANGE(10, max_shopping_time);
     c->products = RAND_RANGE(0, product_cap);
-    c->schedule_cond = malloc(sizeof(pthread_cond_t));
-    c->state_mtx = malloc(sizeof(pthread_mutex_t));
-    c->state_change_event = malloc(sizeof(pthread_cond_t)); 
-    c->state = malloc(sizeof(customer_state_t));
+    c->schedule_cond = calloc(1, sizeof(pthread_cond_t));
+    c->state_mtx = calloc(1, sizeof(pthread_mutex_t));
+    c->state_change_event = calloc(1, sizeof(pthread_cond_t)); 
+    c->state = calloc(1, sizeof(customer_state_t));
     *(c->state) = WAIT_BUY;
     c->customer_count = customer_count;
     c->customer_terminated = customer_terminated;
@@ -217,7 +209,7 @@ int customer_reschedule(customer_opt_t *this) {
     size_t min_queue_id = 0;
 
     while (!rescheduled) {
-    for(size_t i = 0; i < this->cashier_arr_size; i++) {
+    for(int i = 0; i < this->cashier_arr_size; i++) {
         MTX_LOCK_EXT(&this->cashier_mtx_arr[i]);
         if(this->cashier_isopen_arr[i]) {
             curr_size = conc_lqueue_getsize(this->cashier_arr[i].custqueue);
@@ -298,8 +290,7 @@ void* customer_worker(void* arg) {
 
     // ========== Ask manager to get out  ==========
 
-    msgbuf = malloc(MSG_SIZE);
-    memset(msgbuf, 0, MSG_SIZE);
+    msgbuf = calloc(1, MSG_SIZE);
     snprintf(msgbuf, MSG_SIZE, "%s %d %s\n",
              MSG_CUST_HEADER, this->id, MSG_WANT_OUT);
     if (conc_lqueue_enqueue(this->outmsgqueue, (void*) msgbuf) != 0) {

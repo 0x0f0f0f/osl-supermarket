@@ -75,7 +75,7 @@ typedef struct conn_opt_s {
     pthread_mutex_t *count_mtx;
     pthread_cond_t *can_spawn_thread_event;
     // Other data
-    size_t num_cashiers;
+    int num_cashiers;
     long undercrowded_cash_treshold;
     long overcrowded_cash_treshold;
 } conn_opt_t;
@@ -85,17 +85,16 @@ void* conn_worker(void* arg) {
     char msgbuf[MSG_SIZE] = {0};
     ssize_t nread = 0, nwrote;
     int err = 0;
-    printf("CASHIERS NUM = %zu\n", opt->num_cashiers);
-    long *queue_size_arr = malloc(sizeof(long) * (opt->num_cashiers));
-    bool *cashier_isopen_arr = malloc(sizeof(bool) * opt->num_cashiers);
+    printf("CASHIERS NUM = %d\n", opt->num_cashiers);
+    long *queue_size_arr = calloc(opt->num_cashiers, sizeof(long));
+    bool *cashier_isopen_arr = calloc(opt->num_cashiers, sizeof(bool));
 
     for(size_t i = 0; i < opt->num_cashiers; i++) {
         queue_size_arr[i] = 0;
         cashier_isopen_arr[i] = false;
     }
     cashier_isopen_arr[0] = true;
-    
-    if(pthread_sigmask(SIG_BLOCK, &opt->sigset, NULL) < 0)
+        if(pthread_sigmask(SIG_BLOCK, &opt->sigset, NULL) < 0)
         ERR_DIE("Masking signals in connection thread");
 
     LOG_DEBUG("Worker %d socket connected\n", opt->id);
@@ -165,6 +164,7 @@ void* conn_worker(void* arg) {
 
             // ========== Handle size polls ==========
 
+
                 long queue_size = 0;
                 errno = 0;
                 queue_size= strtol(&remaining[strlen(MSG_QUEUE_SIZE)],
@@ -179,20 +179,16 @@ void* conn_worker(void* arg) {
                 long overcrowded_cashier = -1, last_closed = -1,
                      last_open = -1;
                 size_t undercrowded_count = 0, open_cashiers = 1;
-                for(size_t i = 0; i < opt->num_cashiers; i++) {
+                for(int i = 0; i < opt->num_cashiers; i++) {
                     if (cashier_isopen_arr[i]) last_open = i;
                     else last_closed = i;
                     if(queue_size >= opt->overcrowded_cash_treshold) { 
                         overcrowded_cashier = i;
-                    } else if(queue_size_arr[i] <= 1) {
+                    } else if(queue_size <= 1) {
                         undercrowded_count++;
                     }
                 }
                 if(overcrowded_cashier >= 0) {
-                    if(last_closed == -1) {
-                        ERR("Overcrowding! \n");
-                        continue;
-                    }
 
                     memset(msgbuf, 0, MSG_SIZE);
                     snprintf(msgbuf, MSG_SIZE, "%s %ld %s\n", 
@@ -200,7 +196,8 @@ void* conn_worker(void* arg) {
 
                     LOG_DEBUG("Sending message: %s\n", msgbuf);
 
-                    if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
+                    if(last_closed != -1 && 
+                       (nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
                         err = errno;
                         free(msgbuf);
                         ERR("Error sending message\n");
@@ -317,16 +314,16 @@ int main(int argc, char *const argv[]) {
     pthread_attr_t *conn_attrs, sig_attr;
     pid_t *client_pids;
     sigset_t sigset;
-    int *running_count = malloc(sizeof(int));
+    int *running_count = calloc(1, sizeof(int));
     *running_count = 0;
-    pthread_mutex_t *client_pids_mtx = malloc(sizeof(pthread_mutex_t)),
-                    *count_mtx = malloc(sizeof(pthread_mutex_t));
-    pthread_cond_t *can_spawn_thread_event = malloc(sizeof(pthread_cond_t));
+    pthread_mutex_t *client_pids_mtx = calloc(1, sizeof(pthread_mutex_t)),
+                    *count_mtx = calloc(1, sizeof(pthread_mutex_t));
+    pthread_cond_t *can_spawn_thread_event = calloc(1, sizeof(pthread_cond_t));
     char socket_path[UNIX_MAX_PATH] = {0}, 
          config_path[PATH_MAX] = {0};
     bool curr_accepted = false;
 
-    size_t num_cashiers = DEFAULT_NUM_CASHIERS;
+    int num_cashiers = DEFAULT_NUM_CASHIERS;
     long undercrowded_cash_treshold = DEFAULT_UNDERCROWDED_CASH_TRESHOLD;
     long overcrowded_cash_treshold = DEFAULT_OVERCROWDED_CASH_TRESHOLD;
 
@@ -354,10 +351,10 @@ int main(int argc, char *const argv[]) {
         } 
     }
 
+
     // Set default strings
     strncpy(socket_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH);
 
-    strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX);
     if(access(config_path, F_OK) == -1) {
         err = errno;
         ERR_SET_GOTO(main_exit_1, err, "Could not open config file %s: %s",
@@ -371,12 +368,13 @@ int main(int argc, char *const argv[]) {
         ERR("Invalid socket path\n");
         goto main_exit_1;
     }
-    ini_sget(config, NULL, "num_cashiers", "%zu", &num_cashiers);
+    ini_sget(config, NULL, "num_cashiers", "%d", &num_cashiers);
     if(num_cashiers <= 0) {
         ERR("num_cashiers must be a positive integer\n");
         ini_free(config);
         goto main_exit_1;
     }
+
     ini_sget(config, NULL, "undercrowded_cash_treshold", "%ld",
              &undercrowded_cash_treshold);
     if(undercrowded_cash_treshold <= 0) {
@@ -392,14 +390,13 @@ int main(int argc, char *const argv[]) {
         goto main_exit_1;
     }
 
-
     ini_free(config);
 
     // ========== Data initialization ==========
 
-    conn_tid = malloc(manager_pool_size * sizeof(pthread_t));
-    conn_attrs = malloc(manager_pool_size * sizeof(pthread_attr_t));
-    client_pids = malloc(manager_pool_size * sizeof(pid_t));
+    conn_tid = calloc(manager_pool_size, sizeof(pthread_t));
+    conn_attrs = calloc(manager_pool_size, sizeof(pthread_attr_t));
+    client_pids = calloc(manager_pool_size, sizeof(pid_t));
 
     for(int i = 0; i < manager_pool_size; i++) {
         conn_tid[i] = 0;
@@ -469,7 +466,7 @@ int main(int argc, char *const argv[]) {
         }
         if(should_quit) goto main_exit_1;
 
-        conn_opt_t *opt = malloc(sizeof(conn_opt_t)); 
+        conn_opt_t *opt = calloc(1, sizeof(conn_opt_t)); 
         opt->fd = conn_fd;
         opt->id = c_thr;
         opt->client_pids = client_pids;

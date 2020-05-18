@@ -51,13 +51,12 @@ supermarket: $(OBJECTS)
 	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) $(LOGLEVEL) $(LIBS) -c -o $@ $<
 
 clean:
-	$(RM) -f $(TARGETS) *.o
+	$(RM) -f $(TARGETS) *.o *.log
 
-test1:
-	echo hello
-
-test2:
-	echo hello
+test1: debug
+	./test.sh examples/test1.ini 15 SIGQUIT
+test2: debug
+	./test.sh examples/test2.ini 25 SIGHUP
 
 report:
 	$(TEXCC) report.tex

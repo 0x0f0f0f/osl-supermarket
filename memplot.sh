@@ -7,8 +7,9 @@ if [ -z "$1" ]; then
     exit 1;
 fi
 
-# Run the program and get the pidi
-"$1" &
+# Run argv[1:argc] and get the pid
+${@:1:$#} &
+
 PROGPID="$!"
 if [ -z "$PROGPID" ]; then
     echo "Program PID not found" 1>&2;
