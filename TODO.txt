@@ -24,4 +24,4 @@
 [X] Customer ask out
 [X] Reschedule customers on cashier close
 [ ] Usa calloc invece che malloc
-[ ] Send cashier info alltogether
+[X] Send cashier info alltogether
