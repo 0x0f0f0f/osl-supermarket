@@ -12,6 +12,7 @@
 volatile sig_atomic_t conc_lqueue_abort_all_operations = 1;
 
 int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val) {
+    if(!cq) return -1;
     int err = 0;
     MTX_LOCK_RET(cq->mutex);
     if((err = lqueue_enqueue(cq->q, val)) != 0) {

@@ -45,6 +45,7 @@ typedef struct msg_worker_opt_s {
     pthread_t *cashier_tid_arr;
     long time_per_prod;
     pthread_attr_t *cashier_attr_arr;
+    long *cashier_times_closed_arr;
 } msg_worker_opt_t;
 
 
@@ -190,7 +191,8 @@ void* inmsg_worker(void* arg) {
                 cashier_init(&opt.cashier_opt_arr[cash_id], cash_id,
                              &opt.cashier_isopen_arr[cash_id],
                              &opt.cashier_mtx_arr[cash_id],
-                             opt.time_per_prod);
+                             opt.time_per_prod,
+                             &opt.cashier_times_closed_arr[cash_id]);
 
                 if(pthread_create(&opt.cashier_tid_arr[cash_id],
                                   &opt.cashier_attr_arr[cash_id], 
@@ -242,7 +244,7 @@ void* inmsg_worker(void* arg) {
                 opt.cashier_isopen_arr[cash_id] = false;
                 MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
 
-                cashier_destroy(&opt.cashier_opt_arr[cash_id]);
+                // cashier_destroy(&opt.cashier_opt_arr[cash_id]);
 
             } else {
                 LOG_DEBUG("Unrecognized message\n");
@@ -295,6 +297,7 @@ int main(int argc, char* const argv[]) {
     pthread_mutex_t *cashier_mtx_arr = NULL;
     cashier_opt_t *cashier_opt_arr = NULL;
     bool *cashier_isopen_arr = NULL;
+    long *cashier_times_closed_arr = NULL;
     pthread_mutex_t customer_count_mtx;
 
     pthread_t cashier_poller_tid;
@@ -313,6 +316,9 @@ int main(int argc, char* const argv[]) {
     int num_cashiers = DEFAULT_NUM_CASHIERS;
     size_t cust_cap = DEFAULT_CUST_CAP;
     size_t cust_batch = DEFAULT_CUST_BATCH;
+
+    int *total_customers_served = calloc(1, sizeof(int));
+    int *total_products_bought = calloc(1, sizeof(int));
 
 // ========== Data initialization ==========
     if(pthread_attr_init(&outmsg_attr) < 0)
@@ -480,6 +486,7 @@ int main(int argc, char* const argv[]) {
     cashier_opt_arr = calloc(num_cashiers, sizeof(cashier_opt_t));
     cashier_mtx_arr = calloc(num_cashiers, sizeof(pthread_mutex_t));
     cashier_isopen_arr = calloc(num_cashiers, sizeof(bool));
+    cashier_times_closed_arr = calloc(num_cashiers, sizeof(long));
 
     for(size_t i = 0; i < num_cashiers; i++) {
         pthread_attr_init(&cashier_attr_arr[i]);
@@ -499,7 +506,9 @@ int main(int argc, char* const argv[]) {
     cashier_init(&cashier_opt_arr[0], 0,
                  &cashier_isopen_arr[0],
                  &cashier_mtx_arr[0],
-                 time_per_prod);
+                 time_per_prod,
+                 &cashier_times_closed_arr[0]
+                 );
     if(pthread_create(&cashier_tid_arr[0], &cashier_attr_arr[0], 
                       cashier_worker, &cashier_opt_arr[0]) < 0)
         ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
@@ -526,7 +535,9 @@ int main(int argc, char* const argv[]) {
                       max_shopping_time,
                       product_cap, 
                       num_cashiers,
-                      outmsgqueue);
+                      outmsgqueue,
+                      total_customers_served,
+                      total_products_bought);
         
         if(pthread_create(&customer_tid_arr[i], &customer_attr_arr[i], 
                           customer_worker, &customer_opt_arr[i]) < 0)
@@ -553,7 +564,8 @@ int main(int argc, char* const argv[]) {
         cashier_opt_arr,
         cashier_tid_arr,
         time_per_prod,
-        cashier_attr_arr
+        cashier_attr_arr,
+        cashier_times_closed_arr
     };
 
     if(pthread_create(&outmsg_tid, &outmsg_attr,
@@ -596,9 +608,7 @@ int main(int argc, char* const argv[]) {
     if(pthread_create(&customer_renqueue_worker_tid, customer_renqueue_attr,
                       customer_renqueue_worker, customer_renqueue_worker_opt) < 0)
         ERR_SET_GOTO(main_exit_2, err, "Creating customer renqueue worker");
-        
-
-
+     
 // ========== Main loop ==========
 
     while(!should_quit) {
@@ -636,7 +646,9 @@ int main(int argc, char* const argv[]) {
                               max_shopping_time,
                               product_cap,
                               num_cashiers,
-                              outmsgqueue);
+                              outmsgqueue,
+                              total_customers_served,
+                              total_products_bought);
                 if(pthread_create(&customer_tid_arr[i],
                                   &customer_attr_arr[i], 
                                   customer_worker,
@@ -671,6 +683,13 @@ int main(int argc, char* const argv[]) {
             customer_destroy(&customer_opt_arr[i]);
             pthread_attr_destroy(&customer_attr_arr[i]);
         }
+
+        // Print stats
+        MTX_LOCK_DIE(&customer_count_mtx);
+        printf("total_customers_served %d \n", *total_customers_served);
+        printf("products_bought %d \n", *total_products_bought);
+        MTX_UNLOCK_DIE(&customer_count_mtx);
+
         free(customer_opt_arr);
         pthread_join(customer_renqueue_worker_tid, NULL);
         pthread_attr_destroy(customer_renqueue_attr);
@@ -687,6 +706,8 @@ int main(int argc, char* const argv[]) {
                 pthread_join(cashier_tid_arr[i], NULL);
                 pthread_attr_destroy(&cashier_attr_arr[i]);
             }
+            printf("cashier %d times_closed %ld\n", i, 
+                    cashier_times_closed_arr[i]);
         }
 
         free(cashier_tid_arr);
@@ -696,6 +717,9 @@ int main(int argc, char* const argv[]) {
         free(cashier_isopen_arr);
         free(customer_renqueue_worker_opt);
         free(cashier_poller_opt);
+        free(cashier_times_closed_arr);
+        free(total_customers_served);
+        free(total_products_bought);
         close(sock_fd);
         pthread_join(inmsg_tid, NULL);
         pthread_join(outmsg_tid, NULL);

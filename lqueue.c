@@ -74,6 +74,7 @@ int lqueue_remove_index(lqueue_t* q, void** val, int ind) {
         node_t *cur = prev->next;
         prev->next = cur->next;
         *val = (cur->val);
+        free(cur);
         q->count--;
         return 0;
     }

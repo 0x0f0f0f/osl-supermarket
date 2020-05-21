@@ -1,12 +1,13 @@
-[ ] No leaks in supermarket
 [ ] analysis script
 [ ] Log stats
 [ ] Move strerror to strerror_r;   
 [ ] Synchronization primitives that goto labels on fail
-[ ] Fixa SIGINT che muore in supermarket
-[ ] Usa blocking IO il più poossibiel
-[ ] Solo attesa passiva
+[ ] NUMERO INIZIALE DI CASSE APERTE DA CONFIG FILE
+[ ] NOME LOGFILE in file config
+[ ] rand invece che random
 
+[X] Fixa SIGINT che muore in supermarket
+[X] No leaks in supermarket
 [X] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
 [X] No leaks in manager
 [X] threadpool dispatcher per le casse

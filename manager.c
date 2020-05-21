@@ -42,13 +42,13 @@ void* signal_worker (void* arg) {
         SYSCALL_DIE(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
         // Forward SIGHUP (gentle quit) and SIGINT/SIGQUIT (brutal)
         // To connected clients
-        LOG_DEBUG("Intercepted Signal %s\n", strsignal(signum));
+        LOG_DEBUG("Intercepted Signal %d\n", signum);
         if (signum == SIGHUP || signum == SIGQUIT || signum == SIGINT) {
             MTX_LOCK_DIE(opt.client_pids_mtx);
             for(int i = 0; i < opt.manager_pool_size; i++)
                 if(opt.client_pids[i] > 0) {
-                    LOG_DEBUG("Killing process %d with signal %s\n",
-                        opt.client_pids[i], strsignal(signum));
+                    LOG_DEBUG("Killing process %d with signal %d\n",
+                        opt.client_pids[i], signum);
                     kill(opt.client_pids[i], signum);
                 }
             MTX_UNLOCK_DIE(opt.client_pids_mtx);
@@ -89,7 +89,7 @@ void* conn_worker(void* arg) {
     char msgbuf[MSG_SIZE] = {0};
     ssize_t nread = 0, nwrote;
     int err = 0;
-    printf("CASHIERS NUM = %d\n", opt->num_cashiers);
+    // // printf("CASHIERS NUM = %d\n", opt->num_cashiers);
     long *queue_size_arr = calloc(opt->num_cashiers, sizeof(long));
 
     for(size_t i = 0; i < opt->num_cashiers; i++) {
@@ -240,8 +240,8 @@ void* conn_worker(void* arg) {
                 }
             }
 
-            printf("first_closed = %d, undercrowded_count = %d, tresh = %ld\n, open_cash %d, least_cr %d\n",
-             first_closed, undercrowded_count, opt->undercrowded_cash_treshold, open_cashiers, least_crowded);
+            // printf("first_closed = %d, undercrowded_count = %d, tresh = %ld\n, open_cash %d, least_cr %d\n",
+             // first_closed, undercrowded_count, opt->undercrowded_cash_treshold, open_cashiers, least_crowded);
              if (undercrowded_count >=
                        opt->undercrowded_cash_treshold) {
                 LOG_DEBUG("SHOULD CLOSEW!!!!!\n");
@@ -297,14 +297,14 @@ void* conn_worker(void* arg) {
     
 conn_worker_exit:
     MTX_LOCK_EXT(opt->count_mtx);
-    *(opt->running_count) = *(opt->running_count) - 1;
-    opt->running_arr[opt->id] = 0;
-    COND_SIGNAL_EXT(opt->can_spawn_thread_event);
-    MTX_UNLOCK_EXT(opt->count_mtx);
     // Negative pids are ignored when forwarding signals
     MTX_LOCK_EXT(opt->client_pids_mtx);
     opt->client_pids[opt->id] = -1;
     MTX_UNLOCK_EXT(opt->client_pids_mtx);
+    *(opt->running_count) = *(opt->running_count) - 1;
+    opt->running_arr[opt->id] = 2;
+    COND_SIGNAL_EXT(opt->can_spawn_thread_event);
+    MTX_UNLOCK_EXT(opt->count_mtx);
     close(opt->fd);
     free(queue_size_arr);
     pthread_exit(NULL);
@@ -457,13 +457,18 @@ int main(int argc, char *const argv[]) {
                      "Listening on socket\n", err, main_exit_2);
 
     while (!should_quit) {
+        for(int i = 0; i < manager_pool_size; i++) {
+            if(running_arr[i] == 2) {
+                close(opt[c_thr].fd);
+                LOG_DEBUG("Joining connection worker %d\n", i);
+                pthread_join(conn_tid[i], NULL);
+            }
+        }
         MTX_LOCK_DIE(count_mtx);
         while(*running_count >= manager_pool_size) {
             LOG_DEBUG("CONNECTION POOL FULL! WAITING!\n");
             COND_WAIT_DIE(can_spawn_thread_event, count_mtx);
         }
-        // (*running_count) = *running_count + 1;
-        // running_arr[c_thr] = 1;
         MTX_UNLOCK_DIE(count_mtx);
         curr_accepted = false;
         LOG_DEBUG("Waiting for connection...\n");
@@ -505,7 +510,7 @@ main_exit_2:
     should_quit = 1;
     for(int i = 0; i < manager_pool_size; i++) {
         LOG_DEBUG("Thread %d is running? %d\n", i, running_arr[i]);
-        if(running_arr[i] == 1) {
+        if(running_arr[i] == 2) {
             close(opt[c_thr].fd);
             LOG_DEBUG("Joining connection worker %d\n", i);
             pthread_join(conn_tid[i], NULL);
