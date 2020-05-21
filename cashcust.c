@@ -40,7 +40,8 @@ void cashier_init(cashier_opt_t *c, int id,
 }
 
 void cashier_destroy(cashier_opt_t *c) {
-    conc_lqueue_free(c->custqueue);
+    conc_lqueue_destroy(c->custqueue);
+    free(c->custqueue);
 }
 
 void* cashier_poll_worker(void* arg) {
@@ -196,6 +197,7 @@ void* cashier_worker(void* arg) {
     }
 
 cashier_worker_exit:
+    cashier_destroy(&this);
     printf("Cashier closing\n");
     LOG_DEBUG("Cashier %d has closed\n", this.id);
 cashier_worker_exit_instantly:

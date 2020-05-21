@@ -54,8 +54,7 @@ void* outmsg_worker(void* arg) {
     ssize_t sent;
     int err;
 
-    while(1) {
-        if (should_quit) goto outmsg_worker_exit;
+    while(!should_quit) {
         // Pop messages from queue and send them
         if (conc_lqueue_closed(opt.msgqueue)) {
             LOG_DEBUG("Detected closed queue\n");
@@ -90,10 +89,13 @@ void* inmsg_worker(void* arg) {
     char *msgbuf = NULL;
     ssize_t received;
 
-    while(1) {
-        if (should_quit) goto inmsg_worker_exit;
+    while(!should_quit) {
 
         received = recvn(opt.sock_fd, statbuf, MSG_SIZE, 0);
+        // if(errno == EAGAIN || errno == EWOULDBLOCK) {
+        //     sleep(10);
+        //     continue;
+        // } else 
         if (received == 0) {
             LOG_DEBUG("Detected closed socket\n");
             goto inmsg_worker_exit;
@@ -102,7 +104,7 @@ void* inmsg_worker(void* arg) {
             if (err != EINTR)
             LOG_CRITICAL("Error while reading socket: %s\n", strerror(err));
             goto inmsg_worker_exit;
-        }
+        } 
 
         if(conc_lqueue_closed(opt.msgqueue)) {
             LOG_DEBUG("Detected closed queue\n");
@@ -646,20 +648,19 @@ int main(int argc, char* const argv[]) {
             }
         }
         MTX_UNLOCK_DIE(&customer_count_mtx);
+       
+        if(should_quit) {
+            goto main_exit_3;
 
-// ========== Handle inbound messages ==========
-        
-        // if ((err = conc_lqueue_dequeue_nonblock(inmsgqueue,
-        //                                         (void*) &msgbuf)) == 0)
-            if(should_quit) goto main_exit_3;
+        }
             
 
         msleep(supermarket_poll_time);
     }
 
-conc_lqueue_abort_all_operations = 1;
 // ========== Cleanup  ==========
     main_exit_3: 
+        conc_lqueue_abort_all_operations = 1;
         LOG_DEBUG("Joining customer threads\n");
         for(size_t i = 0; i < cust_cap; i++) {
             LOG_DEBUG("Joining customer thread %zu\n", i);
@@ -670,22 +671,24 @@ conc_lqueue_abort_all_operations = 1;
             customer_destroy(&customer_opt_arr[i]);
             pthread_attr_destroy(&customer_attr_arr[i]);
         }
-        LOG_DEBUG("Joining cashier threads\n");
-        for(int i = 0; i < num_cashiers; i++) {
-            LOG_DEBUG("Joining cashier thread %d\n", i);
-            if(cashier_isopen_arr[i]) {
-                pthread_join(cashier_tid_arr[i], NULL);
-                cashier_destroy(&cashier_opt_arr[i]);
-                pthread_attr_destroy(&cashier_attr_arr[i]);
-            }
-        }
+        free(customer_opt_arr);
+        pthread_join(customer_renqueue_worker_tid, NULL);
         pthread_attr_destroy(customer_renqueue_attr);
         free(customer_renqueue_attr);
         pthread_join(cashier_poller_tid, NULL);
         free(customer_terminated_arr);
         free(customer_tid_arr);
         free(customer_attr_arr);
-        free(customer_opt_arr);
+
+        LOG_DEBUG("Joining cashier threads\n");
+        for(int i = 0; i < num_cashiers; i++) {
+            LOG_DEBUG("Joining cashier thread %d\n", i);
+            if(cashier_isopen_arr[i]) {
+                pthread_join(cashier_tid_arr[i], NULL);
+                pthread_attr_destroy(&cashier_attr_arr[i]);
+            }
+        }
+
         free(cashier_tid_arr);
         free(cashier_attr_arr);
         free(cashier_mtx_arr);
@@ -693,9 +696,9 @@ conc_lqueue_abort_all_operations = 1;
         free(cashier_isopen_arr);
         free(customer_renqueue_worker_opt);
         free(cashier_poller_opt);
+        close(sock_fd);
         pthread_join(inmsg_tid, NULL);
         pthread_join(outmsg_tid, NULL);
-        pthread_join(customer_renqueue_worker_tid, NULL);
     main_exit_2:
         LOG_DEBUG("Closing message queue\n");
         conc_lqueue_close(outmsgqueue);

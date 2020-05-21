@@ -107,7 +107,7 @@ void* conn_worker(void* arg) {
 
     LOG_DEBUG("Worker %d socket connected\n", opt->id);
     while(!should_quit) {
-    if ((nread = recvn(opt->fd, msgbuf, MSG_SIZE, 0) > 0)) {
+    if ((nread = recvn(opt->fd, msgbuf, MSG_SIZE, MSG_DONTWAIT) > 0)) {
         LOG_DEBUG("Worker %d fd %d received message: %s",
                     opt->id, opt->fd, msgbuf);
         
@@ -289,7 +289,7 @@ void* conn_worker(void* arg) {
             ERR("Worker %d. Error receiving data: %s\n", opt->id, strerror(err));
             goto conn_worker_exit;
         }
-    } else if (nread == 0) {
+    } else if (errno != EAGAIN && errno != EWOULDBLOCK && nread == 0) {
         goto conn_worker_exit;
     }
     } // while 1
@@ -506,6 +506,7 @@ main_exit_2:
     for(int i = 0; i < manager_pool_size; i++) {
         LOG_DEBUG("Thread %d is running? %d\n", i, running_arr[i]);
         if(running_arr[i] == 1) {
+            close(opt[c_thr].fd);
             LOG_DEBUG("Joining connection worker %d\n", i);
             pthread_join(conn_tid[i], NULL);
             pthread_attr_destroy(&conn_attrs[i]);

@@ -26,7 +26,8 @@ int lqueue_dequeue(lqueue_t* q, void** val) {
         LOG_NEVER("queue %p is empty in dequeue\n", (void*)q);
         return -1;
     }
-    *val = (q->head)->val;
+    if (val) *val = (q->head)->val;
+    
     q->head = list_remove_head(q->head);
     q->count--;
     return 0;
@@ -42,14 +43,17 @@ lqueue_t* lqueue_init () {
 }
 
 void lqueue_destroy(lqueue_t* q) {
+    if (q)
     list_destroy(q->head);
     free(q);
     return;
 }
 
 void lqueue_free(lqueue_t* q) {
+    if(q)
     list_free(q->head);
     free(q);
+    return;
 }
 
 
