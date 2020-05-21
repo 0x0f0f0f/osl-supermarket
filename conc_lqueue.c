@@ -143,4 +143,15 @@ void conc_lqueue_free(conc_lqueue_t* cq) {
     lqueue_free(cq->q);
     free(cq);
     return;
+} 
+
+int conc_lqueue_remove_index(conc_lqueue_t* cq, void** val, int ind) {
+    if(cq == NULL) return -1;
+    int err = 0;
+    MTX_LOCK_RET(cq->mutex);
+    err = lqueue_remove_index(cq->q, val, ind);
+    MTX_UNLOCK_RET(cq->mutex);
+    return err;
 }
+
+

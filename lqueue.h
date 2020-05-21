@@ -33,4 +33,7 @@ void lqueue_destroy(lqueue_t* q);
 /* Destroy the queue but do not destroy the contents */
 void lqueue_free(lqueue_t* q);
 
+/* Remove an element at position ind */
+int lqueue_remove_index(lqueue_t* q, void** val, int ind);
+
 #endif

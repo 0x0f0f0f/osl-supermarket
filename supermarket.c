@@ -35,7 +35,16 @@ typedef struct msg_worker_opt_s {
     // Connection socket file descriptor
     int sock_fd;
     // message queue
-    conc_lqueue_t *msgqueue; 
+    conc_lqueue_t *msgqueue;
+    int cust_cap;
+    customer_opt_t *customer_opt_arr;
+    int num_cashiers;
+    pthread_mutex_t *cashier_mtx_arr;
+    bool *cashier_isopen_arr;
+    cashier_opt_t *cashier_opt_arr;
+    pthread_t *cashier_tid_arr;
+    long time_per_prod;
+    pthread_attr_t *cashier_attr_arr;
 } msg_worker_opt_t;
 
 
@@ -63,6 +72,9 @@ void* outmsg_worker(void* arg) {
             }
             free(msgbuf);
         }
+
+        // TODO use proper passive waiting
+        msleep(2);
     }
 
 outmsg_worker_exit:
@@ -99,11 +111,153 @@ void* inmsg_worker(void* arg) {
         LOG_DEBUG("Received message: %s", statbuf);
         msgbuf = calloc(1, MSG_SIZE);
         strncpy(msgbuf, statbuf, MSG_SIZE);
-        if(conc_lqueue_enqueue(opt.msgqueue, (void*) msgbuf) != 0) {
-            LOG_DEBUG("Error while enqueueing message\n");
-            goto inmsg_worker_exit;  
+
+
+// ========== Customer Exit Confirmation  ==========
+        // NOTE: customers can be kicked out by the manager
+
+        if(strncmp(msgbuf, MSG_CUST_HEADER,
+                   strlen(MSG_CUST_HEADER)) == 0) {
+            char *remaining = NULL;
+            long cust_id = 0; 
+            errno = 0;
+            cust_id = strtol(&msgbuf[strlen(MSG_CUST_HEADER)],
+                   &remaining, 10); 
+            if(cust_id < 0 || cust_id >= opt.cust_cap) {
+                LOG_DEBUG("Received invalid customer ID: %ld\n", cust_id);
+                memset(msgbuf, 0, MSG_SIZE);
+                continue;
+            } else if (msgbuf == remaining) {
+                LOG_DEBUG("Malformed message: no cust ID\n");
+                memset(msgbuf, 0, MSG_SIZE);
+                continue;
+            }
+            // Remove spaces
+            while(*remaining == ' ') remaining++;
+
+            if(strncmp(remaining, MSG_GET_OUT,
+                       strlen(MSG_GET_OUT)) == 0) {
+                MTX_LOCK_DIE(opt.customer_opt_arr[cust_id].state_mtx);
+                *(opt.customer_opt_arr[cust_id].state) = CAN_EXIT;
+                COND_SIGNAL_DIE(opt.customer_opt_arr[cust_id]
+                                .state_change_event);
+                MTX_UNLOCK_DIE(opt.customer_opt_arr[cust_id].state_mtx);
+            }
+
+        } else if (strncmp(msgbuf, MSG_CASH_HEADER,
+                           strlen(MSG_CASH_HEADER)) == 0) {
+
+// ========== Cashier Opening/Closing ==========
+
+            LOG_DEBUG("Received a cash operation\n");
+                              
+            char *remaining = NULL;
+            long cash_id = 0; 
+            errno = 0;
+            cash_id = strtol(&msgbuf[strlen(MSG_CASH_HEADER)],
+                   &remaining, 10); 
+            if(cash_id < 0 || cash_id >= opt.num_cashiers) {
+                LOG_DEBUG("Received invalid cash ID: %ld\n", cash_id);
+                memset(msgbuf, 0, MSG_SIZE);
+                continue;
+            } else if (msgbuf == remaining) {
+                LOG_DEBUG("Malformed message: no cash ID\n");
+                memset(msgbuf, 0, MSG_SIZE);
+                continue;
+            }
+            // Remove spaces
+            while(*remaining == ' ') remaining++;
+            if(strncmp(remaining, MSG_OPEN_CASH,
+                       strlen(MSG_OPEN_CASH)) == 0) {
+
+// ========== Cashier Opening  ==========
+                 
+                MTX_LOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+                if(opt.cashier_isopen_arr[cash_id]) {
+                    ERR("Cashier %ld already open\n",
+                              cash_id);
+                    MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+                    continue;
+                }
+                opt.cashier_isopen_arr[cash_id] = true;
+                MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+
+                // Spawn first cashier thread
+                LOG_DEBUG("Opening cashier %ld\n", cash_id);
+
+                cashier_init(&opt.cashier_opt_arr[cash_id], cash_id,
+                             &opt.cashier_isopen_arr[cash_id],
+                             &opt.cashier_mtx_arr[cash_id],
+                             opt.time_per_prod);
+
+                if(pthread_create(&opt.cashier_tid_arr[cash_id],
+                                  &opt.cashier_attr_arr[cash_id], 
+                                  cashier_worker,
+                                  &opt.cashier_opt_arr[cash_id]) < 0)
+                ERR_SET_GOTO(inmsg_worker_exit, err,
+                             "Creating cashier worker\n");
+
+
+            } else if(strncmp(remaining, MSG_CLOSE_CASH,
+                       strlen(MSG_CLOSE_CASH)) == 0) {
+
+// ========== Cashier Closing ==========
+                
+                MTX_LOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+                if(opt.cashier_isopen_arr[cash_id] == false) {
+                    ERR("Cashier already closed %ld\n",
+                              cash_id);
+                    MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+                    continue;
+                }
+                opt.cashier_isopen_arr[cash_id] = false;
+                MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+
+                LOG_DEBUG("Closing cashier %ld\n", cash_id);
+
+                // Reschedule customers
+                customer_opt_t *curr_cust = NULL;
+                while((err = conc_lqueue_dequeue_nonblock(
+                        opt.cashier_opt_arr[cash_id].custqueue,
+                        (void*) &curr_cust)) == 0) {
+                    customer_reschedule(curr_cust);
+                } 
+                if (err != ELQUEUEEMPTY) {
+                    ERR("Rescheduling customers\n"); 
+                    free(msgbuf);
+                    goto inmsg_worker_exit;
+                }
+
+
+                if(pthread_join(opt.cashier_tid_arr[cash_id], NULL) < 0) {
+                   ERR("Joining cashier thread %ld\n", cash_id);   
+                   free(msgbuf);
+                   goto inmsg_worker_exit;
+                }
+
+
+                MTX_LOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+                opt.cashier_isopen_arr[cash_id] = false;
+                MTX_UNLOCK_DIE(&opt.cashier_mtx_arr[cash_id]);
+
+                cashier_destroy(&opt.cashier_opt_arr[cash_id]);
+
+            } else {
+                LOG_DEBUG("Unrecognized message\n");
+            }
+        } else {
+            LOG_DEBUG("Unrecognized message\n");
         }
+        free(msgbuf);
+
+        // if(conc_lqueue_enqueue(opt.msgqueue, (void*) msgbuf) != 0) {
+        //     LOG_DEBUG("Error while enqueueing message\n");
+        //     free(msgbuf);
+        //     goto inmsg_worker_exit;  
+        // }
+
     }
+
 
 inmsg_worker_exit:
     pthread_exit(NULL);
@@ -158,7 +312,7 @@ int main(int argc, char* const argv[]) {
     size_t cust_cap = DEFAULT_CUST_CAP;
     size_t cust_batch = DEFAULT_CUST_BATCH;
 
-    // ========== Data initialization ==========
+// ========== Data initialization ==========
     if(pthread_attr_init(&outmsg_attr) < 0)
         ERR_SET_GOTO(main_exit_1, err, "Initializing thread attributes\n");
     if(pthread_attr_init(&inmsg_attr) < 0)
@@ -181,11 +335,10 @@ int main(int argc, char* const argv[]) {
     SYSCALL_SET_GOTO(err, sigaction(SIGHUP, &act, NULL),
                     "reg signal\n", err, main_exit_1);
     
-    act.sa_handler = SIG_IGN;
     SYSCALL_SET_GOTO(err, sigaction(SIGPIPE, &act, NULL),
                     "reg signal\n", err, main_exit_1);
 
-    // ========== Parse configuration file ==========
+// ========== Parse configuration file ==========
     int c;
     strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX);
     
@@ -266,7 +419,7 @@ int main(int argc, char* const argv[]) {
 
     ini_free(config);
 
-    // ========== Connect to server process  ==========
+// ========== Connect to server process  ==========
     
     // Prepare socket addr
     memset(&addr, 0, sizeof(addr));
@@ -292,7 +445,7 @@ int main(int argc, char* const argv[]) {
 
     LOG_NOTICE("Waiting for server connection\n");
 
-    // ========== Initial connection exchange  ==========
+// ========== Initial connection exchange  ==========
 
     msgbuf = calloc(1, MSG_SIZE);
     memset(msgbuf, 0, MSG_SIZE);
@@ -318,7 +471,7 @@ int main(int argc, char* const argv[]) {
     LOG_NOTICE("Connection Established\n");
 
 
-    // ========== Creating cashiers. Only 1 is open at startup  ==========
+// ========== Creating cashiers. Only 1 is open at startup  ==========
 
     cashier_tid_arr = calloc(num_cashiers, sizeof(pthread_t));
     cashier_attr_arr = calloc(num_cashiers, sizeof(pthread_attr_t));
@@ -344,24 +497,11 @@ int main(int argc, char* const argv[]) {
     cashier_init(&cashier_opt_arr[0], 0,
                  &cashier_isopen_arr[0],
                  &cashier_mtx_arr[0],
-                 outmsgqueue,
                  time_per_prod);
     if(pthread_create(&cashier_tid_arr[0], &cashier_attr_arr[0], 
                       cashier_worker, &cashier_opt_arr[0]) < 0)
         ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
-    
-    cashier_poller_opt = calloc(1, sizeof(cashier_poll_opt_t));
-    cashier_poller_opt->cashier_arr = cashier_opt_arr;
-    cashier_poller_opt->cashier_arr_size = num_cashiers;
-    cashier_poller_opt->cashier_poll_time = cashier_poll_time;
-    cashier_poller_opt->cashier_mtx_arr = cashier_mtx_arr;
-    cashier_poller_opt->cashier_isopen_arr = cashier_isopen_arr;    if(pthread_create(&cashier_poller_tid, &cashier_poller_attr,
-
-                      cashier_poll_worker, cashier_poller_opt) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Creating cashier poll worker\n");
-                      
-    
-    // ========== Creating first customers ==========
+// ========== Creating first customers ==========
 
     if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0)
         ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", strerror(err));
@@ -394,7 +534,7 @@ int main(int argc, char* const argv[]) {
         MTX_UNLOCK_DIE(&customer_count_mtx);
     }
 
-    // ========== Creating message handler threads ==========
+// ========== Creating message handler threads ==========
 
     msg_worker_opt_t outmsg_opt = {
         sock_fd,
@@ -403,23 +543,63 @@ int main(int argc, char* const argv[]) {
     msg_worker_opt_t inmsg_opt = {
         sock_fd,
         inmsgqueue,
+        cust_cap,
+        customer_opt_arr,
+        num_cashiers,
+        cashier_mtx_arr,
+        cashier_isopen_arr,
+        cashier_opt_arr,
+        cashier_tid_arr,
+        time_per_prod,
+        cashier_attr_arr
     };
 
     if(pthread_create(&outmsg_tid, &outmsg_attr,
                       outmsg_worker, (void*) &outmsg_opt) < 0) {
-        ERR_SET_GOTO(main_exit_1, err, "Creating msg worker\n");
+        ERR_SET_GOTO(main_exit_2, err, "Creating msg worker\n");
     }
     if(pthread_create(&inmsg_tid, &inmsg_attr,
                       inmsg_worker, (void*) &inmsg_opt) < 0) {
-        ERR_SET_GOTO(main_exit_1, err, "Creating msg worker\n");
+        ERR_SET_GOTO(main_exit_2, err, "Creating msg worker\n");
     }
 
+// ========== Creating additional threads ==========
+
+    // Spawn cashier poll thread
+    cashier_poller_opt = calloc(1, sizeof(cashier_poll_opt_t));
+    cashier_poller_opt->cashier_arr = cashier_opt_arr;
+    cashier_poller_opt->cashier_arr_size = num_cashiers;
+    cashier_poller_opt->cashier_poll_time = cashier_poll_time;
+    cashier_poller_opt->cashier_mtx_arr = cashier_mtx_arr;
+    cashier_poller_opt->cashier_isopen_arr = cashier_isopen_arr;
+    cashier_poller_opt->outmsgqueue = outmsgqueue;
+
+    if(pthread_create(&cashier_poller_tid, &cashier_poller_attr,
+
+                      cashier_poll_worker, cashier_poller_opt) < 0)
+        ERR_SET_GOTO(main_exit_2, err, "Creating cashier poll worker\n");
+                      
+
+    //Spawn periodic re-enqueuer thread
+    pthread_t customer_renqueue_worker_tid;
+    pthread_attr_t *customer_renqueue_attr = calloc(1, sizeof(pthread_attr_t));
+    customer_renqueue_worker_t *customer_renqueue_worker_opt 
+        = calloc(1, sizeof(customer_renqueue_worker_t));
+    customer_renqueue_worker_opt->cashier_arr = cashier_opt_arr;
+    customer_renqueue_worker_opt->cashier_arr_size = num_cashiers;
+    customer_renqueue_worker_opt->cashier_isopen_arr = cashier_isopen_arr;
+    customer_renqueue_worker_opt->cashier_mtx_arr = cashier_mtx_arr;
 
 
-    // ========== Main loop ==========
+    if(pthread_create(&customer_renqueue_worker_tid, customer_renqueue_attr,
+                      customer_renqueue_worker, customer_renqueue_worker_opt) < 0)
+        ERR_SET_GOTO(main_exit_2, err, "Creating customer renqueue worker");
+        
 
-    while(1) {
-        if (should_quit) goto main_exit_3;
+
+// ========== Main loop ==========
+
+    while(!should_quit) {
 
         // Check if the number of customers has got below C - E
         MTX_LOCK_DIE(&customer_count_mtx);
@@ -436,7 +616,7 @@ int main(int argc, char* const argv[]) {
         }
         // Otherwise let cust_batch customers in
         else if((cust_cap - customer_count) > cust_batch) {
-            // LOG_DEBUG("Letting more customers in\n");
+            LOG_DEBUG("Letting more customers in\n");
             for(int i = 0; i < cust_cap; i++) {
             if(customer_terminated_arr[i]) {
                 customer_terminated_arr[i] = false;
@@ -467,149 +647,17 @@ int main(int argc, char* const argv[]) {
         }
         MTX_UNLOCK_DIE(&customer_count_mtx);
 
-        // ========== Handle inbound messages ==========
+// ========== Handle inbound messages ==========
         
-        if ((err = conc_lqueue_dequeue_nonblock(inmsgqueue,
-                                                (void*) &msgbuf)) == 0) {
+        // if ((err = conc_lqueue_dequeue_nonblock(inmsgqueue,
+        //                                         (void*) &msgbuf)) == 0)
             if(should_quit) goto main_exit_3;
             
-            // ========== Customer Exit Confirmation  ==========
-
-            if(strncmp(msgbuf, MSG_CUST_HEADER,
-                       strlen(MSG_CUST_HEADER)) == 0) {
-                char *remaining = NULL;
-                long cust_id = 0; 
-                errno = 0;
-                cust_id = strtol(&msgbuf[strlen(MSG_CUST_HEADER)],
-                       &remaining, 10); 
-                if(cust_id < 0 || cust_id >= cust_cap) {
-                    LOG_DEBUG("Received invalid customer ID: %ld\n", cust_id);
-                    memset(msgbuf, 0, MSG_SIZE);
-                    continue;
-                } else if (msgbuf == remaining) {
-                    LOG_DEBUG("Malformed message: no cust ID\n");
-                    memset(msgbuf, 0, MSG_SIZE);
-                    continue;
-                }
-                // Remove spaces
-                while(*remaining == ' ') remaining++;
-
-                if(strncmp(remaining, MSG_GET_OUT,
-                           strlen(MSG_GET_OUT)) == 0) {
-                    MTX_LOCK_DIE(customer_opt_arr[cust_id].state_mtx);
-                    *(customer_opt_arr[cust_id].state) = CAN_EXIT;
-                    COND_SIGNAL_DIE(customer_opt_arr[cust_id]
-                                    .state_change_event);
-                    MTX_UNLOCK_DIE(customer_opt_arr[cust_id].state_mtx);
-                }
-
-            } else if (strncmp(msgbuf, MSG_CASH_HEADER,
-                               strlen(MSG_CASH_HEADER)) == 0) {
-
-                // ========== Cashier Opening/Closing ==========
-
-                LOG_DEBUG("Received a cash operation\n");
-                                  
-                char *remaining = NULL;
-                long cash_id = 0; 
-                errno = 0;
-                cash_id = strtol(&msgbuf[strlen(MSG_CASH_HEADER)],
-                       &remaining, 10); 
-                if(cash_id < 0 || cash_id >= num_cashiers) {
-                    LOG_DEBUG("Received invalid cash ID: %ld\n", cash_id);
-                    memset(msgbuf, 0, MSG_SIZE);
-                    continue;
-                } else if (msgbuf == remaining) {
-                    LOG_DEBUG("Malformed message: no cash ID\n");
-                    memset(msgbuf, 0, MSG_SIZE);
-                    continue;
-                }
-                // Remove spaces
-                while(*remaining == ' ') remaining++;
-                if(strncmp(remaining, MSG_OPEN_CASH,
-                           strlen(MSG_OPEN_CASH)) == 0) {
-
-                    // ========== Cashier Opening  ==========
-                     
-                    MTX_LOCK_DIE(&cashier_mtx_arr[cash_id]);
-                    if(cashier_isopen_arr[cash_id]) {
-                        ERR("Cashier %ld already open\n",
-                                  cash_id);
-                        MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
-                        continue;
-                    }
-                    cashier_isopen_arr[cash_id] = true;
-                    MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
-
-                    // Spawn first cashier thread
-                    LOG_DEBUG("Opening cashier %ld\n", cash_id);
-
-                    cashier_init(&cashier_opt_arr[cash_id], cash_id,
-                                 &cashier_isopen_arr[cash_id],
-                                 &cashier_mtx_arr[cash_id],
-                                 outmsgqueue,
-                                 time_per_prod);
-                    if(pthread_create(&cashier_tid_arr[cash_id],
-                                      &cashier_attr_arr[cash_id], 
-                                      cashier_worker,
-                                      &cashier_opt_arr[cash_id]) < 0)
-                    ERR_SET_GOTO(main_exit_2, err,
-                                 "Creating cashier worker\n");
-
-
-                } else if(strncmp(remaining, MSG_CLOSE_CASH,
-                           strlen(MSG_CLOSE_CASH)) == 0) {
-
-                    // ========== Cashier Closing ==========
-                    MTX_LOCK_DIE(&cashier_mtx_arr[cash_id]);
-                    if(cashier_isopen_arr[cash_id] == false) {
-                        ERR("Cashier already closed %ld\n",
-                                  cash_id);
-                        MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
-                        continue;
-                    }
-                    cashier_isopen_arr[cash_id] = false;
-                    MTX_UNLOCK_DIE(&cashier_mtx_arr[cash_id]);
-
-                    LOG_DEBUG("Closing cashier %ld\n", cash_id);
-
-                    // Reschedule customers
-                    customer_opt_t *curr_cust = NULL;
-                    while((err = conc_lqueue_dequeue_nonblock(
-                            cashier_opt_arr[cash_id].custqueue,
-                            (void*) &curr_cust)) == 0) {
-                        customer_reschedule(curr_cust);
-                    } 
-                    if (err != ELQUEUEEMPTY) {
-                        ERR("Rescheduling customers\n"); 
-                        free(msgbuf);
-                        goto main_exit_3;
-                    }
-
-                    if(pthread_join(cashier_tid_arr[cash_id], NULL) < 0) {
-                       ERR("Joining cashier thread %ld\n", cash_id);   
-                       free(msgbuf);
-                       goto main_exit_3;
-                    }
-
-                    
-                    cashier_destroy(&cashier_opt_arr[cash_id]);
-
-                } else {
-                    LOG_DEBUG("Unrecognized message\n");
-                }
-            } else {
-                LOG_DEBUG("Unrecognized message\n");
-            }
-            free(msgbuf);
-        }
-
-        
 
         msleep(supermarket_poll_time);
     }
 
-    // ========== Cleanup  ==========
+// ========== Cleanup  ==========
     main_exit_3: 
         LOG_DEBUG("Joining customer threads\n");
         for(size_t i = 0; i < cust_cap; i++) {

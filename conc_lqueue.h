@@ -45,4 +45,8 @@ void conc_lqueue_destroy(conc_lqueue_t* cq);
 /* Destroy the queue but do not destroy the contents */
 void conc_lqueue_free(conc_lqueue_t* cq);
 
+/* Remove an element at position ind from the queue
+ * and store the result in val */
+int conc_lqueue_remove_index(conc_lqueue_t* cq, void** val, int ind);
+
 #endif

@@ -1,27 +1,25 @@
-[?] threadpool dispatcher per le casse
-[X] cassa consumatore con variabile attiva o no
-[X] cliente produttore su coda cassiere
-[ ] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
-[X] external config
-[X] handle signals in processes
-[X] message worker in supermarket
 [ ] No leaks in supermarket
 [ ] analysis script
 [ ] Log stats
-[X] Termina manager come supermarket con var globale
+[ ] Move strerror to strerror_r;   
+[ ] Synchronization primitives that goto labels on fail
+[ ] Fixa SIGINT che muore in supermarket
+[ ] Usa blocking IO il più poossibiel
+[ ] Solo attesa passiva
+
+[X] on scheduling time S ogni customer riceve un signal e decide dove spostarsi
+[X] No leaks in manager
+[X] threadpool dispatcher per le casse
+[X] Send cashier info alltogether better
+[X] Usa calloc invece che malloc
+[X] Send cashier info alltogether
+[X] Fai rientrare clienti
+[X] external config
+[X] handle signals in processes
+[X] message worker in supermarket
 [X] Poll time in cashier threads to send num of enqueued custs to manager 
 [X] Handle cashier and customer messages in manager (use strncomp to get header) 
 [X] Apri e chiudi casse
-[ ] Move strerror to strerror_r;  
-[X] SIGQUIT management; 
-[X] Correct SIGHUP management
-[X] Fai rientrare clienti
 [X] config as argument
-[ ] Synchronization primitives that goto labels on fail
-[X] Termina thread cassiere alla chiusura da direttore
-[ ] Fixa SIGINT che muore in supermarket
-[ ] Usa blocking IO il più poossibiel
 [X] Customer ask out
 [X] Reschedule customers on cashier close
-[X] Usa calloc invece che malloc
-[X] Send cashier info alltogether

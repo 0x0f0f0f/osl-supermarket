@@ -37,7 +37,7 @@ void* signal_worker (void* arg) {
         ERR_DIE("Masking signals in connection thread");
 
     // Wait for the signals
-    while(1) {
+    while(!should_quit) {
         SYSCALL_DIE(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
         // Forward SIGHUP (gentle quit) and SIGQUIT (brutal)
         // To connected clients
@@ -51,11 +51,13 @@ void* signal_worker (void* arg) {
                     kill(opt.client_pids[i], signum);
                 }
             MTX_UNLOCK_DIE(opt.client_pids_mtx);
-            should_quit = 1;
-        } else should_quit = 1;
+        } 
+        should_quit = 1;
+        goto signal_worker_exit;
     }
-    // Should never get here
-    exit(EXIT_FAILURE);
+
+    signal_worker_exit:
+        pthread_exit(NULL);
 }
 
 
@@ -78,6 +80,7 @@ typedef struct conn_opt_s {
     int num_cashiers;
     long undercrowded_cash_treshold;
     long overcrowded_cash_treshold;
+    int *running_arr;
 } conn_opt_t;
 
 void* conn_worker(void* arg) {
@@ -87,15 +90,19 @@ void* conn_worker(void* arg) {
     int err = 0;
     printf("CASHIERS NUM = %d\n", opt->num_cashiers);
     long *queue_size_arr = calloc(opt->num_cashiers, sizeof(long));
-    bool *cashier_isopen_arr = calloc(opt->num_cashiers, sizeof(bool));
 
     for(size_t i = 0; i < opt->num_cashiers; i++) {
-        queue_size_arr[i] = 0;
-        cashier_isopen_arr[i] = false;
+        queue_size_arr[i] = -1;
     }
-    cashier_isopen_arr[0] = true;
-        if(pthread_sigmask(SIG_BLOCK, &opt->sigset, NULL) < 0)
+    queue_size_arr[0] = 0;
+    if(pthread_sigmask(SIG_BLOCK, &opt->sigset, NULL) < 0)
         ERR_DIE("Masking signals in connection thread");
+
+    
+    MTX_LOCK_DIE(opt->count_mtx);
+    *(opt->running_count) = *(opt->running_count) + 1;
+    opt->running_arr[opt->id] = 1; 
+    MTX_UNLOCK_DIE(opt->count_mtx);
 
     LOG_DEBUG("Worker %d socket connected\n", opt->id);
     while(!should_quit) {
@@ -137,110 +144,12 @@ void* conn_worker(void* arg) {
                     opt->id, opt->client_pids[opt->id]);
                 MTX_UNLOCK_EXT(opt->client_pids_mtx);
             }
-
-        // ========== Handle cash messages ==========
             
-        } else if (strncmp(msgbuf, MSG_CASH_HEADER, 
-                           strlen(MSG_CASH_HEADER)) == 0) {
-            char *remaining = NULL;
-            long cash_id = 0; 
-            errno = 0;
-            cash_id = strtol(&msgbuf[strlen(MSG_CASH_HEADER)],
-                   &remaining, 10); 
-            if(cash_id < 0 || cash_id >= opt->num_cashiers) {
-                LOG_DEBUG("Received invalid cash ID: %ld\n", cash_id);
-                memset(msgbuf, 0, MSG_SIZE);
-                continue;
-            } else if (msgbuf == remaining) {
-                LOG_DEBUG("Malformed message: no cash ID\n");
-                memset(msgbuf, 0, MSG_SIZE);
-                continue;
-            }
-            // Remove spaces
-            while(*remaining == ' ') remaining++;
-
-            if(strncmp(remaining, MSG_QUEUE_SIZE,
-                       strlen(MSG_QUEUE_SIZE)) == 0) {
-
-            // ========== Handle size polls ==========
-
-
-                long queue_size = 0;
-                errno = 0;
-                queue_size= strtol(&remaining[strlen(MSG_QUEUE_SIZE)],
-                                   NULL, 10); 
-                if(queue_size < 0 || errno == ERANGE) {
-                    LOG_DEBUG("Received invalid queue_size %ld\n", queue_size);
-                    memset(msgbuf, 0, MSG_SIZE);
-                    continue;
-                }
-                queue_size_arr[cash_id] = queue_size;
-                
-                long overcrowded_cashier = -1, last_closed = -1,
-                     last_open = -1;
-                size_t undercrowded_count = 0, open_cashiers = 1;
-                for(int i = 0; i < opt->num_cashiers; i++) {
-                    if (cashier_isopen_arr[i]) last_open = i;
-                    else last_closed = i;
-                    if(queue_size >= opt->overcrowded_cash_treshold) { 
-                        overcrowded_cashier = i;
-                    } else if(queue_size <= 1) {
-                        undercrowded_count++;
-                    }
-                }
-                if(overcrowded_cashier >= 0) {
-
-                    memset(msgbuf, 0, MSG_SIZE);
-                    snprintf(msgbuf, MSG_SIZE, "%s %ld %s\n", 
-                             MSG_CASH_HEADER, last_closed, MSG_OPEN_CASH);
-
-                    LOG_DEBUG("Sending message: %s\n", msgbuf);
-
-                    if(last_closed != -1 && 
-                       (nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
-                        err = errno;
-                        free(msgbuf);
-                        ERR("Error sending message\n");
-                        goto conn_worker_exit;
-                    }
-                } else if (undercrowded_count >=
-                           opt->undercrowded_cash_treshold) {
-                    if(open_cashiers > 1) {
-                        if(last_open == -1) {
-                            ERR("Internal logic error\n");
-                            free(msgbuf);
-                            goto conn_worker_exit;
-                        }
-                        memset(msgbuf, 0, MSG_SIZE);
-                        snprintf(msgbuf, MSG_SIZE, "%s %ld %s\n", 
-                             MSG_CASH_HEADER, last_open, MSG_CLOSE_CASH);
-
-                        LOG_DEBUG("Sending message: %s\n", msgbuf);
-
-                        if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
-                            err = errno;
-                            free(msgbuf);
-                            ERR("Error sending message\n");
-                            goto conn_worker_exit;
-                        }
-                    }
-                }
-            } else if (strncmp(remaining, MSG_CASH_CLOSED,
-                               strlen(MSG_CASH_CLOSED)) == 0) {
-                                   
-            // ========== Cash closed confirmation  ==========
-
-            cashier_isopen_arr[cash_id] = false;
+        // ========== Handle customer exit requests ==========
             
-            } else if (strncmp(remaining, MSG_CASH_OPENED,
-                               strlen(MSG_CASH_OPENED)) == 0) {
-            // ========== Cash opened confirmation  ==========
-            cashier_isopen_arr[cash_id] = true;
-            }
-
         } else if (strncmp(msgbuf, MSG_CUST_HEADER,
                            strlen(MSG_CUST_HEADER)) == 0) {
-        // ========== Handle customer exit requests ==========
+                               
         char *remaining = NULL;
         long cust_id = 0; 
         errno = 0;
@@ -269,9 +178,104 @@ void* conn_worker(void* arg) {
             ERR("Error sending message\n");
             goto conn_worker_exit;
         }
+        
+        // ========== Handle size polls ==========
+
+        } else if (strncmp(msgbuf, MSG_QUEUE_SIZE,
+                          strlen(MSG_QUEUE_SIZE)) == 0) {
+
+            char *before_parsing = &msgbuf[strlen(MSG_QUEUE_SIZE)];
+            char *after_parsing = NULL;
+            int received = 0;
+            long queue_size = 0;
 
 
+            while(received < opt->num_cashiers) {
+                // Read all the cashiers queue sizes sequentially
+                // fail if there is not enough in the message 
 
+                errno = 0;
+                queue_size= strtol(before_parsing, &after_parsing, 10); 
+                if(queue_size < -1 || errno == ERANGE) {
+                    free(msgbuf);
+                    ERR_SET_GOTO(conn_worker_exit, err,
+                      "Received invalid queue_size %ld\n", queue_size);
+                    
+                } else if (before_parsing == after_parsing) {
+                    should_quit = 1;
+                    ERR_SET_GOTO(conn_worker_exit, err,
+                      "Not enough cashiers in size poll\n");
+                }
+
+                queue_size_arr[received] = queue_size;
+                before_parsing = after_parsing;
+                received++;
+            }
+
+            int overcrowded_cashier = -1, first_closed = -1,
+                least_crowded = -1, least_crowded_size = INT_MAX;
+            int undercrowded_count = 0, open_cashiers = 1;
+
+           
+            for(int i = 0; i < opt->num_cashiers; i++) {
+                if (queue_size_arr[i] == -1 && first_closed == -1) {
+                    first_closed = i;
+                }
+                else {
+                    if (queue_size_arr[i] >= 0
+                        && (least_crowded == -1
+                            || queue_size_arr[i] < least_crowded_size)) {
+                        least_crowded = i;
+                        least_crowded_size = queue_size_arr[i];
+                    }
+                    open_cashiers++;
+                } 
+                if(queue_size_arr[i] > 0 &&
+                   queue_size_arr[i] >= opt->overcrowded_cash_treshold) {
+                    overcrowded_cashier = i;
+                } else if(queue_size_arr[i] >= 0 && 
+                          queue_size_arr[i] <= 1) {
+                    undercrowded_count++;
+                }
+            }
+
+            printf("first_closed = %d, undercrowded_count = %d, tresh = %ld\n, open_cash %d, least_cr %d\n",
+             first_closed, undercrowded_count, opt->undercrowded_cash_treshold, open_cashiers, least_crowded);
+             if (undercrowded_count >=
+                       opt->undercrowded_cash_treshold) {
+                LOG_DEBUG("SHOULD CLOSEW!!!!!\n");
+                if(open_cashiers > 1) {
+                    if(least_crowded == -1) {
+                        ERR("Internal logic error\n");
+                        free(msgbuf);
+                        goto conn_worker_exit;
+                    }
+                    memset(msgbuf, 0, MSG_SIZE);
+                    snprintf(msgbuf, MSG_SIZE, "%s %d %s\n", 
+                         MSG_CASH_HEADER, least_crowded, MSG_CLOSE_CASH);
+
+                    LOG_DEBUG("Sending message: %s\n", msgbuf);
+
+                    if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
+                        err = errno;
+                        free(msgbuf);
+                        ERR("Error sending message\n");
+                        goto conn_worker_exit;
+                    }
+                }
+            } else if(first_closed != -1 && overcrowded_cashier >= 0) {
+                memset(msgbuf, 0, MSG_SIZE);
+                snprintf(msgbuf, MSG_SIZE, "%s %d %s\n", 
+                         MSG_CASH_HEADER, first_closed, MSG_OPEN_CASH);
+
+                LOG_DEBUG("Sending message: %s\n", msgbuf);
+                if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
+                    err = errno;
+                    free(msgbuf);
+                    ERR("Error sending message\n");
+                    goto conn_worker_exit;
+                }
+            }
         } else {
         // ========== Other cases  ==========
             LOG_DEBUG("Unrecognised message\n");
@@ -293,6 +297,7 @@ void* conn_worker(void* arg) {
 conn_worker_exit:
     MTX_LOCK_EXT(opt->count_mtx);
     *(opt->running_count) = *(opt->running_count) - 1;
+    opt->running_arr[opt->id] = 0;
     COND_SIGNAL_EXT(opt->can_spawn_thread_event);
     MTX_UNLOCK_EXT(opt->count_mtx);
     // Negative pids are ignored when forwarding signals
@@ -300,6 +305,7 @@ conn_worker_exit:
     opt->client_pids[opt->id] = -1;
     MTX_UNLOCK_EXT(opt->client_pids_mtx);
     close(opt->fd);
+    free(queue_size_arr);
     pthread_exit(NULL);
 }
 
@@ -327,6 +333,11 @@ int main(int argc, char *const argv[]) {
     long undercrowded_cash_treshold = DEFAULT_UNDERCROWDED_CASH_TRESHOLD;
     long overcrowded_cash_treshold = DEFAULT_OVERCROWDED_CASH_TRESHOLD;
 
+    conn_opt_t *opt = NULL;
+
+    // Tells which threads are running
+    int *running_arr = NULL;
+    
     // Create signal set
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGHUP);
@@ -397,16 +408,18 @@ int main(int argc, char *const argv[]) {
     conn_tid = calloc(manager_pool_size, sizeof(pthread_t));
     conn_attrs = calloc(manager_pool_size, sizeof(pthread_attr_t));
     client_pids = calloc(manager_pool_size, sizeof(pid_t));
+    opt = calloc(manager_pool_size, sizeof(conn_opt_t));
+    running_arr = calloc(manager_pool_size, sizeof(int));
 
     for(int i = 0; i < manager_pool_size; i++) {
         conn_tid[i] = 0;
         client_pids[i] = 0;
+        running_arr[i] = 0;
         if((err = pthread_attr_init(&conn_attrs[i])) != 0)
             ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-        if((err = pthread_attr_setdetachstate(&conn_attrs[i],
-                                              PTHREAD_CREATE_DETACHED)) != 0)
-            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-
+        // if((err = pthread_attr_setdetachstate(&conn_attrs[i],
+                                              // PTHREAD_CREATE_DETACHED)) != 0)
+            // ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
     }
 
     // Initializing mutexes, conds and thread attributes
@@ -436,11 +449,11 @@ int main(int argc, char *const argv[]) {
     unlink(socket_path);
     // At first accept as non blocking then reset to blocking
     SYSCALL_SET_GOTO(sock_fd, socket(AF_UNIX, SOCK_STREAM|SOCK_NONBLOCK, 0), 
-                     "Creating socket\n", err, main_exit_1);
+                     "Creating socket\n", err, main_exit_2);
     SYSCALL_SET_GOTO(err, bind(sock_fd, (struct sockaddr*) &addr, 
-                     sizeof(addr)), "Binding socket\n", err, main_exit_1);
+                     sizeof(addr)), "Binding socket\n", err, main_exit_2);
     SYSCALL_SET_GOTO(err, listen(sock_fd, manager_pool_size),
-                     "Listening on socket\n", err, main_exit_1);
+                     "Listening on socket\n", err, main_exit_2);
 
     while (!should_quit) {
         MTX_LOCK_DIE(count_mtx);
@@ -448,7 +461,8 @@ int main(int argc, char *const argv[]) {
             LOG_DEBUG("CONNECTION POOL FULL! WAITING!\n");
             COND_WAIT_DIE(can_spawn_thread_event, count_mtx);
         }
-        (*running_count) = *running_count + 1;
+        // (*running_count) = *running_count + 1;
+        // running_arr[c_thr] = 1;
         MTX_UNLOCK_DIE(count_mtx);
         curr_accepted = false;
         LOG_DEBUG("Waiting for connection...\n");
@@ -458,33 +472,55 @@ int main(int argc, char *const argv[]) {
                err = errno;
                if (err != EAGAIN && err != EWOULDBLOCK) {
                    ERR("Accepting connection\n");
-                   goto main_exit_1;
+                   goto main_exit_2;
                }
            } else {
                curr_accepted = true;
            }
         }
-        if(should_quit) goto main_exit_1;
+        if(should_quit) goto main_exit_3;
 
-        conn_opt_t *opt = calloc(1, sizeof(conn_opt_t)); 
-        opt->fd = conn_fd;
-        opt->id = c_thr;
-        opt->client_pids = client_pids;
-        opt->client_pids_mtx = client_pids_mtx;
-        opt->sigset = sigset;
-        opt->running_count = running_count;
-        opt->count_mtx = count_mtx;
-        opt->can_spawn_thread_event = can_spawn_thread_event;
-        opt->num_cashiers = num_cashiers;
-        opt->undercrowded_cash_treshold = undercrowded_cash_treshold;
-        opt->overcrowded_cash_treshold = overcrowded_cash_treshold;
+        opt[c_thr].fd = conn_fd;
+        opt[c_thr].id = c_thr;
+        opt[c_thr].client_pids = client_pids;
+        opt[c_thr].client_pids_mtx = client_pids_mtx;
+        opt[c_thr].sigset = sigset;
+        opt[c_thr].running_count = running_count;
+        opt[c_thr].count_mtx = count_mtx;
+        opt[c_thr].can_spawn_thread_event = can_spawn_thread_event;
+        opt[c_thr].num_cashiers = num_cashiers;
+        opt[c_thr].undercrowded_cash_treshold = undercrowded_cash_treshold;
+        opt[c_thr].overcrowded_cash_treshold = overcrowded_cash_treshold;
+        opt[c_thr].running_arr = running_arr;
         err = pthread_create(&conn_tid[c_thr], &conn_attrs[c_thr],
                              conn_worker, opt);
         if(err != 0) ERR_DIE("Spawning thread: %s", strerror(err));
         c_thr = (c_thr + 1) % manager_pool_size;
     }
 
+main_exit_3:
+    pthread_join(sig_tid, NULL);
+main_exit_2:
+    should_quit = 1;
+    for(int i = 0; i < manager_pool_size; i++) {
+        LOG_DEBUG("Thread %d is running? %d\n", i, running_arr[i]);
+        if(running_arr[i] == 1) {
+            LOG_DEBUG("Joining connection worker %d\n", i);
+            pthread_join(conn_tid[i], NULL);
+            pthread_attr_destroy(&conn_attrs[i]);
+        }
+    }
+    free(opt);
+    free(conn_attrs);
+    free(can_spawn_thread_event);
+    free(conn_tid);
+    free(running_arr);
+    free(client_pids);
 main_exit_1:
+    pthread_attr_destroy(&sig_attr);
+    free(running_count);
+    free(count_mtx);
+    free(client_pids_mtx);
     unlink(socket_path);
     return 0;
 }

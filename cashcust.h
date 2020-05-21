@@ -14,8 +14,6 @@ typedef struct cashier_opt_s {
     int id;
     // Concurrent customer queue
     conc_lqueue_t *custqueue;
-    // Outbound message queue
-    conc_lqueue_t *outmsgqueue;
     // Cashier state 
     bool *isopen;
     pthread_mutex_t *state_mtx;
@@ -68,7 +66,16 @@ typedef struct cashier_poll_opt_s {
     bool *cashier_isopen_arr;
     int cashier_arr_size;
     long cashier_poll_time;
+    conc_lqueue_t *outmsgqueue;
+
 } cashier_poll_opt_t;
+
+typedef struct customer_renqueue_worker_t {
+    bool* cashier_isopen_arr;
+    pthread_mutex_t *cashier_mtx_arr;
+    int cashier_arr_size;
+    cashier_opt_t *cashier_arr;
+} customer_renqueue_worker_t;
 
 // ========== Worker Function Declarations ==========
 void* cashier_poll_worker(void* arg);
@@ -77,7 +84,6 @@ void* customer_worker(void* arg);
 void cashier_init(cashier_opt_t *c, int id,
                   bool *isopen,
                   pthread_mutex_t *state_mtx,
-                  conc_lqueue_t *outq,
                   long time_per_prod);
 
 void customer_init(customer_opt_t *c, int id,
@@ -96,6 +102,8 @@ void customer_init(customer_opt_t *c, int id,
 void cashier_destroy(cashier_opt_t *c);
 void customer_destroy(customer_opt_t *c);
 int customer_reschedule(customer_opt_t *this);
+int cashier_reschedule_enqueued_customers(cashier_opt_t *ca);
+void* customer_renqueue_worker(void *arg);
 
 #endif // customer_h_INCLUDED
 

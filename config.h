@@ -33,14 +33,10 @@
 // ========== IPC-protocol messages ==========
 
 // Messages have a fixed size. Should be zero padded and NULL terminated.
-#define MSG_SIZE 512
+#define MSG_SIZE 1024
 // Must be followed by the ID of the cashier ended by newline
 #define MSG_OPEN_CASH "open_cashier"
 #define MSG_CLOSE_CASH "close_cashier"
-
-// Confirmation messages 
-#define MSG_CASH_CLOSED "closed"
-#define MSG_CASH_OPENED "opened"
 
 // This is the first message a supermarket sends to connect to the manager
 // Must be followed by the PID of the supermarket process ended by newline

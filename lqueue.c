@@ -51,3 +51,27 @@ void lqueue_free(lqueue_t* q) {
     list_free(q->head);
     free(q);
 }
+
+
+int lqueue_remove_index(lqueue_t* q, void** val, int ind) {
+    if (q == NULL) return -2;
+    if (ind >= q->count || ind < 0) {
+        LOG_CRITICAL("Index out of bounds\n");
+        return -1;
+    } else if (ind == 0) {
+        *val = (q->head)->val;
+        q->head = list_remove_head(q->head);
+        q->count--;
+    } else {
+        node_t *prev = q->head;
+        for(int i = 0; i < ind - 1; i++) {
+            prev = prev->next;
+        }
+        node_t *cur = prev->next;
+        prev->next = cur->next;
+        *val = (cur->val);
+        q->count--;
+        return 0;
+    }
+    return 0;
+}
