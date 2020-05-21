@@ -56,7 +56,7 @@ void* cashier_poll_worker(void* arg) {
         snprintf(msgbuf, MSG_SIZE, "%s", MSG_QUEUE_SIZE);
 
         LOG_DEBUG("Polling...\n");
-        printf("%d \n", this->cashier_arr_size);
+        // printf("%d \n", this->cashier_arr_size);
         for (int i = 0; i < this->cashier_arr_size; i++) {
             curr_isopen = false;
             cash = &this->cashier_arr[i];
@@ -103,7 +103,7 @@ int cashier_reschedule_enqueued_customers(cashier_opt_t *ca) {
                customer_opt_t *cu = NULL;
                err = lqueue_remove_index(ca->custqueue->q, (void*) &cu, i);
 
-               printf("%d\n", err);
+               // printf("%d\n", err);
                if(err == 0) {
                    LOG_DEBUG("rescheduling customer %d\n", cu->id);
                    MTX_UNLOCK_RET(ca->custqueue->mutex);
@@ -128,7 +128,7 @@ void* customer_renqueue_worker(void *arg) {
             MTX_LOCK_EXT(&opt->cashier_mtx_arr[i]);
             if(opt->cashier_isopen_arr[i] == true) {
                 MTX_UNLOCK_EXT(&opt->cashier_mtx_arr[i]);
-                printf("removing and rescheduling customers of cashier %d\n", i);
+                // printf("removing and rescheduling customers of cashier %d\n", i);
                 cashier_reschedule_enqueued_customers(&opt->cashier_arr[i]);
 
             } else {
@@ -142,6 +142,7 @@ void* customer_renqueue_worker(void *arg) {
 }
 
 void* cashier_worker(void* arg) {
+    printf("Cashier worker strating\n");
     cashier_opt_t this = *(cashier_opt_t *) arg;
     customer_opt_t *curr_cust = NULL;
     // Time needed to initially process a customer,
@@ -166,7 +167,7 @@ void* cashier_worker(void* arg) {
         printf("Cashier %d looping \n", this.id);
 
         MTX_LOCK_EXT(this.state_mtx);
-        if(*(this.isopen)) {
+        if(!*(this.isopen)) {
             MTX_UNLOCK_EXT(this.state_mtx);
             goto cashier_worker_exit;
         }
@@ -191,9 +192,11 @@ void* cashier_worker(void* arg) {
             LOG_CRITICAL("Unknown Error in cashier %d queue", this.id);
             goto cashier_worker_exit_instantly;
         }
+
     }
 
 cashier_worker_exit:
+    printf("Cashier closing\n");
     LOG_DEBUG("Cashier %d has closed\n", this.id);
 cashier_worker_exit_instantly:
     return (NULL);
@@ -249,14 +252,14 @@ int customer_reschedule(customer_opt_t *this) {
    
     bool rescheduled = false;
     long min_queue_size = INT_MAX, curr_size = 0;
-    size_t min_queue_id = -1;
+    int min_queue_id = -1;
 
     while (!rescheduled) {
     for(int i = 0; i < this->cashier_arr_size; i++) {
         MTX_LOCK_EXT(&this->cashier_mtx_arr[i]);
         if(this->cashier_isopen_arr[i]) {
             curr_size = conc_lqueue_getsize(this->cashier_arr[i].custqueue);
-            if(min_queue_id <= 0 || curr_size < min_queue_size) { 
+            if(min_queue_id < 0 || curr_size < min_queue_size) { 
                 min_queue_id = i;
                 min_queue_size = curr_size;
             }
@@ -264,19 +267,18 @@ int customer_reschedule(customer_opt_t *this) {
         MTX_UNLOCK_EXT(&this->cashier_mtx_arr[i]);
     }
 
-    if(min_queue_size >= 0) {
-        LOG_DEBUG("Enqueueing customer %d to cashier %zu\n",
+    if(min_queue_id >= 0) {
+        LOG_DEBUG("Enqueueing customer %d to cashier %d\n",
             this->id, min_queue_id);
-        // TODO check if cashier was closed in the meanwhile
         MTX_LOCK_EXT(&this->cashier_mtx_arr[min_queue_id]);
         if (this->cashier_isopen_arr[min_queue_id] == false) {
             MTX_UNLOCK_EXT(&this->cashier_mtx_arr[min_queue_id]);
             continue;
         }
-        MTX_UNLOCK_EXT(&this->cashier_mtx_arr[min_queue_id]);
         conc_lqueue_enqueue(this->cashier_arr[min_queue_id].custqueue,
                             (void*) this);
         customer_set_state(this, WAIT_PAY);
+        MTX_UNLOCK_EXT(&this->cashier_mtx_arr[min_queue_id]);
         rescheduled = true;
     }
 

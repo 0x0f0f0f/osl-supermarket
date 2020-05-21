@@ -93,7 +93,7 @@ void* inmsg_worker(void* arg) {
     while(1) {
         if (should_quit) goto inmsg_worker_exit;
 
-        received = readn(opt.sock_fd, statbuf, MSG_SIZE);
+        received = recvn(opt.sock_fd, statbuf, MSG_SIZE, 0);
         if (received == 0) {
             LOG_DEBUG("Detected closed socket\n");
             goto inmsg_worker_exit;
@@ -657,6 +657,7 @@ int main(int argc, char* const argv[]) {
         msleep(supermarket_poll_time);
     }
 
+conc_lqueue_abort_all_operations = 1;
 // ========== Cleanup  ==========
     main_exit_3: 
         LOG_DEBUG("Joining customer threads\n");
@@ -678,20 +679,30 @@ int main(int argc, char* const argv[]) {
                 pthread_attr_destroy(&cashier_attr_arr[i]);
             }
         }
+        pthread_attr_destroy(customer_renqueue_attr);
+        free(customer_renqueue_attr);
+        pthread_join(cashier_poller_tid, NULL);
         free(customer_terminated_arr);
         free(customer_tid_arr);
         free(customer_attr_arr);
         free(customer_opt_arr);
         free(cashier_tid_arr);
         free(cashier_attr_arr);
+        free(cashier_mtx_arr);
         free(cashier_opt_arr);
+        free(cashier_isopen_arr);
+        free(customer_renqueue_worker_opt);
+        free(cashier_poller_opt);
+        pthread_join(inmsg_tid, NULL);
+        pthread_join(outmsg_tid, NULL);
+        pthread_join(customer_renqueue_worker_tid, NULL);
     main_exit_2:
         LOG_DEBUG("Closing message queue\n");
         conc_lqueue_close(outmsgqueue);
         conc_lqueue_close(inmsgqueue);
-    main_exit_1:
-        LOG_DEBUG("Final cleanups... \n");
         conc_lqueue_destroy(outmsgqueue);
         conc_lqueue_destroy(inmsgqueue);
+    main_exit_1:
+        LOG_DEBUG("Final cleanups... \n");
         exit(err);
 }

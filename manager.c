@@ -12,6 +12,7 @@
 #include <limits.h>
 
 #include "globals.h"
+#include "conc_lqueue.h"
 #include "ini.h"
 #include "cashcust.h"
 #include "config.h"
@@ -39,10 +40,10 @@ void* signal_worker (void* arg) {
     // Wait for the signals
     while(!should_quit) {
         SYSCALL_DIE(err, sigwait(&opt.sigset, &signum), "waiting for signals\n");
-        // Forward SIGHUP (gentle quit) and SIGQUIT (brutal)
+        // Forward SIGHUP (gentle quit) and SIGINT/SIGQUIT (brutal)
         // To connected clients
         LOG_DEBUG("Intercepted Signal %s\n", strsignal(signum));
-        if (signum == SIGHUP || signum == SIGQUIT) {
+        if (signum == SIGHUP || signum == SIGQUIT || signum == SIGINT) {
             MTX_LOCK_DIE(opt.client_pids_mtx);
             for(int i = 0; i < opt.manager_pool_size; i++)
                 if(opt.client_pids[i] > 0) {

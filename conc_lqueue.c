@@ -6,6 +6,10 @@
 #include "lqueue.h"
 #include "logger.h"
 #include "util.h"
+#include "errno.h"
+#include "signal.h"
+
+volatile sig_atomic_t conc_lqueue_abort_all_operations = 1;
 
 int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val) {
     int err = 0;
@@ -26,7 +30,7 @@ int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val) {
 int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
     int err = 0;
     MTX_LOCK_RET(cq->mutex);
-    while((err = lqueue_dequeue(cq->q, val)) < 0) {
+    while(conc_lqueue_abort_all_operations == 0 && (err = lqueue_dequeue(cq->q, val)) < 0) {
         /* Queue is empty, wait for value or check if closed */
         if(LQUEUE_CLOSED(cq->q)) {
             LOG_NEVER("lqueue %p was closed\n", (void*) cq);
@@ -40,6 +44,7 @@ int conc_lqueue_dequeue(conc_lqueue_t* cq, void** val) {
         /* Otherwise wait for signal */
         COND_WAIT_RET(cq->produce_event, cq->mutex);
     }
+    if(conc_lqueue_abort_all_operations != 0) err = ELQUEUEABORTED;
     MTX_UNLOCK_RET(cq->mutex);
 
     LOG_NEVER("successfully popped element %p\n", *val);

@@ -3,6 +3,8 @@
 
 #include <pthread.h>
 #include "lqueue.h"
+#include "errno.h"
+#include "signal.h"
 
 typedef struct __conc_lqueue {
     pthread_mutex_t* mutex;
@@ -12,11 +14,13 @@ typedef struct __conc_lqueue {
 
 /* Error code for closed buffer */
 #define ELQUEUECLOSED -666
-#define ELQUEUEEMPTY -667
+#define ELQUEUEEMPTY EWOULDBLOCK
+#define ELQUEUEABORTED -123
 
 #define CONC_LQUEUE_ASSERT_EXISTS(q) if(q == NULL) \
     {ERR_DIE("expected a queue to be allocated: %p\n", (void*) q);}
 
+extern volatile sig_atomic_t conc_lqueue_abort_all_operations;
 
 /* Put an item in the queue, doing appropriate locking and signaling */
 int conc_lqueue_enqueue(conc_lqueue_t* cq, void* val);
