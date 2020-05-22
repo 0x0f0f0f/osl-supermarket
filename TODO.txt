@@ -1,11 +1,12 @@
+[ ] Finire relazione
 [ ] analysis script
-[ ] Log stats
 [ ] Move strerror to strerror_r;   
 [ ] Synchronization primitives that goto labels on fail
 [ ] NUMERO INIZIALE DI CASSE APERTE DA CONFIG FILE
 [ ] NOME LOGFILE in file config
 [ ] rand invece che random
 
+[X] Log stats
 [X] Fixa SIGINT che muore in supermarket
 [X] No leaks in supermarket
 [X] on scheduling time S ogni customer riceve un signal e decide dove spostarsi

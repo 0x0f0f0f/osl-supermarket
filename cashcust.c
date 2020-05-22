@@ -62,7 +62,6 @@ void* cashier_poll_worker(void* arg) {
         LOG_DEBUG("Polling...\n");
         // printf("%d \n", this->cashier_arr_size);
         for (int i = 0; i < this->cashier_arr_size; i++) {
-            curr_isopen = false;
             cash = &this->cashier_arr[i];
             enqueued_customers = -1;
             MTX_LOCK_EXT(&this->cashier_mtx_arr[i]);
@@ -409,7 +408,7 @@ customer_worker_wait_confirm:
     double  ms_in_supermarket = ((double)end_time)/CLOCKS_PER_SEC * 1000;
     double  ms_in_queue = ((double)queue_time)/CLOCKS_PER_SEC * 1000;
 
-    printf("customer %d ms_in_supermarket %10f\n",
+    printf("customer %d ms_in_supermarket %.3f\n",
         *(this->total_customers_served),
         ms_in_supermarket);
     printf("customer %d ms_in_queue %10f\n",

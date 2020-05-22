@@ -10,6 +10,7 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <limits.h>
+#include <fcntl.h>
 
 #include "globals.h"
 #include "conc_lqueue.h"
@@ -127,7 +128,7 @@ void* conn_worker(void* arg) {
                 if (opt->client_pids[opt->id] > 0) {
                     LOG_DEBUG("PID %d already connected to worker %d", 
                         opt->client_pids[opt->id], opt->id);
-                    err = EALREADY;
+                    // err = EALREADY;
                     goto conn_worker_exit;
                 }
                 // Push the process PID into clients table
@@ -174,8 +175,7 @@ void* conn_worker(void* arg) {
                  MSG_CUST_HEADER, cust_id, MSG_GET_OUT);
         
         if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
-            err = errno;
-            free(msgbuf);
+            // err = errno;
             ERR("Error sending message\n");
             goto conn_worker_exit;
         }
@@ -198,7 +198,6 @@ void* conn_worker(void* arg) {
                 errno = 0;
                 queue_size= strtol(before_parsing, &after_parsing, 10); 
                 if(queue_size < -1 || errno == ERANGE) {
-                    free(msgbuf);
                     ERR_SET_GOTO(conn_worker_exit, err,
                       "Received invalid queue_size %ld\n", queue_size);
                     
@@ -248,7 +247,6 @@ void* conn_worker(void* arg) {
                 if(open_cashiers > 1) {
                     if(least_crowded == -1) {
                         ERR("Internal logic error\n");
-                        free(msgbuf);
                         goto conn_worker_exit;
                     }
                     memset(msgbuf, 0, MSG_SIZE);
@@ -258,8 +256,7 @@ void* conn_worker(void* arg) {
                     LOG_DEBUG("Sending message: %s\n", msgbuf);
 
                     if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
-                        err = errno;
-                        free(msgbuf);
+                        // err = errno;
                         ERR("Error sending message\n");
                         goto conn_worker_exit;
                     }
@@ -271,8 +268,7 @@ void* conn_worker(void* arg) {
 
                 LOG_DEBUG("Sending message: %s\n", msgbuf);
                 if((nwrote = sendn(opt->fd, msgbuf, MSG_SIZE, 0)) <= 0) {
-                    err = errno;
-                    free(msgbuf);
+                    // err = errno;
                     ERR("Error sending message\n");
                     goto conn_worker_exit;
                 }
@@ -449,8 +445,16 @@ int main(int argc, char *const argv[]) {
     strncpy(addr.sun_path, socket_path, UNIX_MAX_PATH);
     unlink(socket_path);
     // At first accept as non blocking then reset to blocking
-    SYSCALL_SET_GOTO(sock_fd, socket(AF_UNIX, SOCK_STREAM|SOCK_NONBLOCK, 0), 
+    SYSCALL_SET_GOTO(sock_fd, socket(AF_UNIX, SOCK_STREAM, 0), 
                      "Creating socket\n", err, main_exit_2);
+
+    // Set socket to nonblocking
+    int sock_flags;
+    SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd, F_GETFL),
+                     "getting sock_flags\n", err, main_exit_1);
+    SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd, F_SETFL, sock_flags|O_NONBLOCK),
+                     "setting socket flags\n", err, main_exit_1);
+
     SYSCALL_SET_GOTO(err, bind(sock_fd, (struct sockaddr*) &addr, 
                      sizeof(addr)), "Binding socket\n", err, main_exit_2);
     SYSCALL_SET_GOTO(err, listen(sock_fd, manager_pool_size),
@@ -482,6 +486,13 @@ int main(int argc, char *const argv[]) {
                }
            } else {
                curr_accepted = true;
+            // // Set socket to nonblocking
+            // int sock_flags;
+            // SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd, F_GETFL),
+            //                  "getting sock_flags\n", err, main_exit_1);
+            // SYSCALL_SET_GOTO(sock_flags, fcntl(sock_fd,
+            //                                    F_SETFL, sock_flags|O_NONBLOCK),
+            //                  "setting socket flags\n", err, main_exit_1);
            }
         }
         if(should_quit) goto main_exit_3;
@@ -510,7 +521,7 @@ main_exit_2:
     should_quit = 1;
     for(int i = 0; i < manager_pool_size; i++) {
         LOG_DEBUG("Thread %d is running? %d\n", i, running_arr[i]);
-        if(running_arr[i] == 2) {
+        if(running_arr[i] >= 1) {
             close(opt[c_thr].fd);
             LOG_DEBUG("Joining connection worker %d\n", i);
             pthread_join(conn_tid[i], NULL);
@@ -519,11 +530,11 @@ main_exit_2:
     }
     free(opt);
     free(conn_attrs);
-    free(can_spawn_thread_event);
     free(conn_tid);
     free(running_arr);
     free(client_pids);
 main_exit_1:
+    free(can_spawn_thread_event);
     pthread_attr_destroy(&sig_attr);
     free(running_count);
     free(count_mtx);

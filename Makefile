@@ -37,7 +37,7 @@ never: clean all
 debug: CFLAGS+=-g
 debug: LOGLEVEL+=-DLOG_LVL=LOG_LVL_DEBUG
 debug: LOGLEVEL+=-DLOG_SYSCALL
-debug: clean all
+debug: all
 
 all: $(OBJECTS) $(TARGETS)
 

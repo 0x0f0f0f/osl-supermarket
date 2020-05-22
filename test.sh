@@ -21,6 +21,6 @@ valgrind --leak-check=full --log-file=./valgrind-manager.log  ./manager -c "$1" 
 MANAGER_PID="$!"
 valgrind --leak-check=full --log-file=./valgrind-supermarket.log  ./supermarket -c "$1" &
 SUPERMARKET_PID="$!"
-(sleep "$2" && echo killing $MANAGER_PID && kill -$3 $MANAGER_PID)
+(sleep "$2" && kill -$3 $MANAGER_PID)
 
 exit 0
