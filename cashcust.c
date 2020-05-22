@@ -32,13 +32,15 @@ void cashier_init(cashier_opt_t *c, int id,
                   bool *isopen,
                   pthread_mutex_t *state_mtx,
                   long time_per_prod, 
-                  long *times_closed) {
+                  long *times_closed,
+                  FILE *logfile) {
     c->id = id;
     c->custqueue = conc_lqueue_init(c->custqueue);
     c->isopen = isopen;
     c->state_mtx = state_mtx;
     c->time_per_prod = time_per_prod;
     c->times_closed = times_closed;
+    c->logfile = logfile;
 }
 
 void cashier_destroy(cashier_opt_t *c) {
@@ -64,9 +66,11 @@ void* cashier_poll_worker(void* arg) {
         for (int i = 0; i < this->cashier_arr_size; i++) {
             cash = &this->cashier_arr[i];
             enqueued_customers = -1;
-            MTX_LOCK_EXT(&this->cashier_mtx_arr[i]);
+            MTX_LOCK_GOTO(&this->cashier_mtx_arr[i],
+                          cashier_poll_exit);
             curr_isopen = this->cashier_isopen_arr[i];
-            MTX_UNLOCK_EXT(&this->cashier_mtx_arr[i]);
+            MTX_UNLOCK_GOTO(&this->cashier_mtx_arr[i],
+                            cashier_poll_exit);
 
             if(curr_isopen) {
                 // LOG_DEBUG("Polling cashier %d\n", i);
@@ -98,12 +102,16 @@ int cashier_reschedule_enqueued_customers(cashier_opt_t *ca) {
     int err = 0;
     if (!ca->custqueue) return -1;
     MTX_LOCK_RET(ca->custqueue->mutex);
-    long size = ca->custqueue->q->count;
+    int size = ca->custqueue->q->count;
 
+    unsigned int seed = clock();
+    srand(seed);
+    
     if (size > 0) {
-        for(long i = 0; i < size; i++) {
+        for(int i = 0; i < size; i++, size = ca->custqueue->q->count) {
+           
            // TODO is it ok to reschedule on a probability?
-           if (RAND_RANGE(0, 3) == 0) {
+           if (RAND_RANGE(&seed, 0, 3) == 0) {
                customer_opt_t *cu = NULL;
                err = lqueue_remove_index(ca->custqueue->q, (void*) &cu, i);
 
@@ -153,21 +161,21 @@ void* cashier_worker(void* arg) {
     long start_time,
          pay_time;
          // Number of enqueued customers
-    char *msgbuf = NULL;
     int err = 0;
     clock_t start_clock;
     clock_t end_time;
     long customers_served = 0; 
+    long total_products = 0;
 
     start_clock = clock();
 
     CONC_LQUEUE_ASSERT_EXISTS(this.custqueue);
 
     // ========== Initialization ==========
+    unsigned int seed = clock();
+    srand(seed);
 
-    srand(time(NULL));
-
-    start_time = RAND_RANGE(CASHIER_START_TIME_MIN,
+    start_time = RAND_RANGE(&seed, CASHIER_START_TIME_MIN,
                             CASHIER_START_TIME_MAX); 
 
     // ========== Main loop ==========
@@ -175,12 +183,14 @@ void* cashier_worker(void* arg) {
     while(!should_quit) {
         // printf("Cashier %d looping \n", this.id);
 
-        MTX_LOCK_EXT(this.state_mtx);
+        MTX_LOCK_GOTO(this.state_mtx,
+                      cashier_worker_exit_instantly);
         if(!*(this.isopen)) {
-            MTX_UNLOCK_EXT(this.state_mtx);
+            MTX_UNLOCK_GOTO(this.state_mtx,
+                            cashier_worker_exit_instantly);
             goto cashier_worker_exit;
         }
-        MTX_UNLOCK_EXT(this.state_mtx);
+        MTX_UNLOCK_GOTO(this.state_mtx, cashier_worker_exit_instantly);
 
         if((err = conc_lqueue_dequeue_nonblock(this.custqueue, 
                                         (void *)&curr_cust)) == 0) {
@@ -188,8 +198,9 @@ void* cashier_worker(void* arg) {
             customer_set_state(curr_cust, PAYING);
             pay_time = start_time + (curr_cust->products * 
                 this.time_per_prod);
-
-            printf("cashier %d customer %ld service_time %ld\n",
+            total_products += curr_cust->products;
+            fprintf(this.logfile,
+                "cashier %d customer %ld service_time %ld\n",
                 this.id, customers_served, pay_time);
             msleep(pay_time);
             customer_set_state(curr_cust, TERMINATED);
@@ -211,8 +222,10 @@ void* cashier_worker(void* arg) {
 cashier_worker_exit:
     end_time = clock() - start_clock;
     double ms_open = ((double)end_time)/CLOCKS_PER_SEC * 1000;
-    printf("cashier %d open_for %f\n", this.id, ms_open);
-    printf("cashier %d customers_served %ld\n", this.id,
+    fprintf(this.logfile, "cashier %d open_for %f\n", this.id, ms_open);
+    fprintf(this.logfile, "cashier %d products_elaborated %ld\n",
+        this.id, total_products);
+    fprintf(this.logfile, "cashier %d customers_served %ld\n", this.id,
         customers_served);
 
     *(this.times_closed) = *(this.times_closed) + 1;
@@ -234,11 +247,14 @@ void customer_init(customer_opt_t *c, int id,
                    int cashier_arr_size,
                    conc_lqueue_t *outmsgqueue,
                    int *total_customers_served,
-                   int *total_products_bought
+                   int *total_products_bought,
+                   FILE* logfile
                   ) {
     c->id = id;
-    c->buying_time = RAND_RANGE(10, max_shopping_time);
-    c->products = RAND_RANGE(0, product_cap);
+    unsigned int seed = clock();
+    srand(seed);
+    c->buying_time = RAND_RANGE(&seed, 10, max_shopping_time);
+    c->products = RAND_RANGE(&seed, 0, product_cap);
     c->schedule_cond = calloc(1, sizeof(pthread_cond_t));
     c->state_mtx = calloc(1, sizeof(pthread_mutex_t));
     c->state_change_event = calloc(1, sizeof(pthread_cond_t)); 
@@ -255,6 +271,7 @@ void customer_init(customer_opt_t *c, int id,
     c->total_products_bought= total_products_bought;
     c->outmsgqueue = outmsgqueue;
     c->requeue_count = 0;
+    c->logfile = logfile;
     pthread_cond_init(c->schedule_cond, NULL);
     pthread_mutex_init(c->state_mtx, NULL);
     pthread_cond_init(c->state_change_event, NULL);
@@ -317,9 +334,12 @@ int customer_reschedule(customer_opt_t *this) {
 void* customer_worker(void* arg) {
     customer_opt_t *this = (customer_opt_t *) arg;
     char *msgbuf;
-    bool is_enqueued = false;
     clock_t start_time;
     start_time = clock();
+    clock_t queue_start_time;
+    clock_t queue_time;
+
+
     // ========== Initialization ==========
 
     srand(time(NULL));
@@ -332,6 +352,7 @@ void* customer_worker(void* arg) {
 
     if (this->products == 0) {
         customer_set_state(this, TERMINATED);
+        queue_time = 0;
         goto customer_worker_wait_confirm;
     }
     
@@ -346,33 +367,34 @@ void* customer_worker(void* arg) {
     if (should_quit) goto customer_worker_exit;
 
     LOG_DEBUG("Customer %d is in queue...\n", this->id);
-    clock_t queue_start_time;
     queue_start_time = clock();
-    MTX_LOCK_EXT(this->state_mtx);
+    MTX_LOCK_GOTO(this->state_mtx, customer_worker_exit);
     while(*(this->state) != PAYING) {
         if(should_quit) {
-            MTX_UNLOCK_EXT(this->state_mtx);
+            MTX_UNLOCK_GOTO(this->state_mtx,
+                            customer_worker_exit);
             goto customer_worker_exit;
         }
 
-        COND_WAIT_EXT(this->state_change_event, this->state_mtx);
+        COND_WAIT_GOTO(this->state_change_event, this->state_mtx,
+                       customer_worker_exit);
     }
-    MTX_UNLOCK_EXT(this->state_mtx);
+    MTX_UNLOCK_GOTO(this->state_mtx, customer_worker_exit);
     
     LOG_DEBUG("Customer %d is paying...\n", this->id);
-    clock_t queue_time;
     queue_time = clock() - queue_start_time;
 
-    MTX_LOCK_EXT(this->state_mtx);
+    MTX_LOCK_GOTO(this->state_mtx, customer_worker_exit);
     while(*(this->state) != TERMINATED) {
         if(should_quit) {
-            MTX_UNLOCK_EXT(this->state_mtx);
+            MTX_UNLOCK_GOTO(this->state_mtx, customer_worker_exit);
             goto customer_worker_exit;
         }
 
-        COND_WAIT_EXT(this->state_change_event, this->state_mtx);
+        COND_WAIT_GOTO(this->state_change_event, this->state_mtx,
+                       customer_worker_exit);
     }
-    MTX_UNLOCK_EXT(this->state_mtx);
+    MTX_UNLOCK_GOTO(this->state_mtx, customer_worker_exit);
 
 
     // ========== Ask manager to get out  ==========
@@ -388,42 +410,50 @@ void* customer_worker(void* arg) {
     
 customer_worker_wait_confirm:
     LOG_DEBUG("Customer %d is waiting for exit confirmation\n", this->id);
-    MTX_LOCK_EXT(this->state_mtx);
+    MTX_LOCK_GOTO(this->state_mtx, customer_worker_exit);
     while(*(this->state) != CAN_EXIT) {
         if(should_quit || should_close) {
-            MTX_UNLOCK_EXT(this->state_mtx);
+            MTX_UNLOCK_GOTO(this->state_mtx, customer_worker_exit);
             goto customer_worker_exit;
         }
 
-        COND_WAIT_EXT(this->state_change_event, this->state_mtx);
+        COND_WAIT_GOTO(this->state_change_event, this->state_mtx,
+                       customer_worker_exit);
     }
-    MTX_UNLOCK_EXT(this->state_mtx);
+    MTX_UNLOCK_GOTO(this->state_mtx,
+                    customer_worker_exit);
 
 
     // if customer is exiting normally, contribute to customers 
     // served and products bought statistics
-    MTX_LOCK_EXT(this->customer_count_mtx);
+    MTX_LOCK_GOTO(this->customer_count_mtx,
+                  customer_worker_exit);
     // Time elapsed in the supermarket
     clock_t end_time  = clock() - start_time;
     double  ms_in_supermarket = ((double)end_time)/CLOCKS_PER_SEC * 1000;
     double  ms_in_queue = ((double)queue_time)/CLOCKS_PER_SEC * 1000;
 
-    printf("customer %d ms_in_supermarket %.3f\n",
+
+    fprintf(this->logfile,
+        "customer %d ms_in_supermarket %.3f\n",
         *(this->total_customers_served),
         ms_in_supermarket);
-    printf("customer %d ms_in_queue %10f\n",
+    fprintf(this->logfile,
+        "customer %d ms_in_queue %.3f\n",
         *(this->total_customers_served),
         ms_in_queue);
-    printf("customer %d products_bought %d\n",
+    fprintf(this->logfile,
+        "customer %d products_bought %d\n",
         *(this->total_customers_served),
         this->products);
-    printf("customer %d requeue_count %d\n",
+    fprintf(this->logfile,
+        "customer %d requeue_count %d\n",
         *(this->total_customers_served),
         this->requeue_count++);
     *(this->total_customers_served) = *(this->total_customers_served) + 1;
     *(this->total_products_bought) = *(this->total_products_bought) 
         + this->products;
-    MTX_UNLOCK_EXT(this->customer_count_mtx);
+    MTX_UNLOCK_GOTO(this->customer_count_mtx, customer_worker_exit);
 
 
 customer_worker_exit:

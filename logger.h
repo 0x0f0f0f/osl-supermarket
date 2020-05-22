@@ -24,7 +24,8 @@ static char* logname(enum loglevel l) {
 
 
 #define LOG(level, fmt, args...) { if(level <= LOG_LVL) {\
-    fprintf(LOGFILE, "[ %s - %s():%d ] " fmt, logname(level), __func__, __LINE__, ##args);\
+    fprintf(LOGFILE, "[ %s - %s:%s():%d ] " fmt, logname(level), __FILE__,\
+    __func__, __LINE__, ##args);\
 	fflush(stderr); }}
 
 #define LOG_CRITICAL(args...) LOG(LOG_LVL_CRITICAL, args)

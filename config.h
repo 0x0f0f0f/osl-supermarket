@@ -6,6 +6,7 @@
 
 #define DEFAULT_SOCK_PATH "./orders.sock"
 #define DEFAULT_CONFIG_PATH "./config.ini"
+#define DEFAULT_LOG_PATH "./supermarket.log"
 #define DEFAULT_MAX_CONN_ATTEMPTS 10
 #define DEFAULT_CONN_ATTEMPT_DELAY 500
 #define DEFAULT_NUM_CASHIERS 2
@@ -16,7 +17,7 @@
 #define DEFAULT_MAX_SHOPPING_TIME 500
 #define DEFAULT_PRODUCT_CAP 80 
 #define DEFAULT_SUPERMARKET_POLL_TIME 10
-
+#define DEFAULT_INITIAL_OPEN_CASHIERS 1
 // Number of cashiers with <= 1 enqueued customer
 // necessary to close a cash register
 #define DEFAULT_UNDERCROWDED_CASH_TRESHOLD 2

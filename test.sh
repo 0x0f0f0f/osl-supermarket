@@ -15,7 +15,6 @@ if [ -z "$3" ]; then
     exit 1
 fi
 
-echo "Valgrind test"
 
 valgrind --leak-check=full --log-file=./valgrind-manager.log  ./manager -c "$1" &
 MANAGER_PID="$!"

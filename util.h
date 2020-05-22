@@ -19,8 +19,8 @@
 
 // Use POSIX random because of a better distribution
 // than rand.
-#define RAND_RANGE(low, up) \
-    ((rand() % (up - low + 1)) + low)
+#define RAND_RANGE(seed, low, up) \
+    ((rand_r(seed) % (up - low + 1)) + low)
 
 // ========== System call utilities  ==========
 
@@ -49,27 +49,32 @@
 
 #define MTX_LOCK_DIE(mtx) \
     { int err = 0; if((err = pthread_mutex_lock(mtx)) != 0) {\
-        ERR("error locking resource: %s\n", strerror(err)); exit(err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); exit(err);\
     } LOG_NEVER("MUTEX %p locked\n", (void*)mtx);}
 
 #define MTX_UNLOCK_DIE(mtx) \
     { int err = 0; if((err = pthread_mutex_unlock(mtx)) != 0) {\
-        ERR("error locking resource: %s\n", strerror(err)); exit(err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); exit(err);\
     } LOG_NEVER("MUTEX %p unlocked\n", (void*)mtx);}
 
 #define COND_SIGNAL_DIE(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
-        ERR("error signaling cond: %s\n", strerror(err)); exit(err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error signaling cond: %s\n", errs); exit(err);\
     } LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
 
 #define COND_BROADCAST_DIE(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
-        ERR("error signaling cond: %s\n", strerror(err)); exit(err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error signaling cond: %s\n", errs); exit(err);\
     } LOG_NEVER("COND VAR %p broadcasted\n", (void*)ev);}
 
 #define COND_WAIT_DIE(event, mtx) \
     { int err = 0; if((err = pthread_cond_wait(event, mtx)) != 0) {\
-        ERR("error waiting for cond: %s\n", strerror(err)); exit(err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error waiting for cond: %s\n", errs); exit(err);\
     } LOG_NEVER("COND VAR %p waiting\n", (void*)event);}
 
 
@@ -111,28 +116,67 @@
 
 #define MTX_LOCK_EXT(mtx) \
     { int err = 0; if((err = pthread_mutex_lock(mtx)) != 0) {\
-        ERR("error locking resource: %s\n", strerror(err)); pthread_exit((void*)&err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); pthread_exit((void*)&err);\
     } LOG_NEVER("MUTEX %p locked\n", (void*)mtx);}
 
 #define MTX_UNLOCK_EXT(mtx) \
     { int err = 0; if((err = pthread_mutex_unlock(mtx)) != 0) {\
-        ERR("error locking resource: %s\n", strerror(err)); pthread_exit((void*)&err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); pthread_exit((void*)&err);\
     } LOG_NEVER("MUTEX %p unlocked\n", (void*)mtx);}
 
 #define COND_SIGNAL_EXT(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
-    ERR("error signaling cond: %s\n", strerror(err)); pthread_exit((void*)&err);}\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+    ERR("error signaling cond: %s\n", errs); pthread_exit((void*)&err);}\
     LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
     
 #define COND_BROADCAST_EXT(ev) \
     { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
-        ERR("error signaling cond: %s\n", strerror(err)); pthread_exit((void*)&err);\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error signaling cond: %s\n", errs); pthread_exit((void*)&err);\
     } LOG_NEVER("COND VAR %p broadcasted\n", (void*)ev);}
 
 #define COND_WAIT_EXT(ev, mtx) \
     { int err = 0; if((err = pthread_cond_wait(ev, mtx)) != 0) {\
-        ERR("error waiting for cond: %s\n", strerror(err)); pthread_exit((void*)&err);}\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error waiting for cond: %s\n", errs); pthread_exit((void*)&err);}\
     LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
+
+
+// ========== Synchronization macros that goto a label on fail ==========
+
+#define MTX_LOCK_GOTO(mtx, lab) \
+    { int err = 0; if((err = pthread_mutex_lock(mtx)) != 0) {\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); goto lab;\
+    } LOG_NEVER("MUTEX %p locked\n", (void*)mtx);}
+
+#define MTX_UNLOCK_GOTO(mtx, lab) \
+    { int err = 0; if((err = pthread_mutex_unlock(mtx)) != 0) {\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error locking resource: %s\n", errs); goto lab;\
+    } LOG_NEVER("MUTEX %p unlocked\n", (void*)mtx);}
+
+#define COND_SIGNAL_GOTO(ev, lab) \
+    { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+    ERR("error signaling cond: %s\n", errs); goto lab;}\
+    LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
+    
+#define COND_BROADCAST_GOTO(ev, lab) \
+    { int err = 0; if((err = pthread_cond_signal(ev)) != 0) {\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error signaling cond: %s\n", errs); goto lab;\
+    } LOG_NEVER("COND VAR %p broadcasted\n", (void*)ev);}
+
+#define COND_WAIT_GOTO(ev, mtx, lab) \
+    { int err = 0; if((err = pthread_cond_wait(ev, mtx)) != 0) {\
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);\
+        ERR("error waiting for cond: %s\n", errs); goto lab;}\
+    LOG_NEVER("COND VAR %p signaled\n", (void*)ev);}
+
 
 // ========== Miscellaneous Functions ==========
 

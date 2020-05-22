@@ -1,5 +1,5 @@
-CC = clang
-CFLAGS = -Wall -std=gnu99 -pthread -D_POSIX_C_SOURCE=200809L
+CC = gcc
+CFLAGS = -Wall -std=gnu99 -pthread -D_POSIX_C_SOURCE=2001012L
 LIBS = 
 OPTFLAGS = -O3
 LDFLAGS = 
@@ -57,6 +57,7 @@ test1: debug
 	./test.sh examples/test1.ini 15 SIGQUIT
 test2: debug
 	./test.sh examples/test2.ini 25 SIGHUP
+	./analisi.sh supermarket.log
 
 report:
 	$(TEXCC) report.tex

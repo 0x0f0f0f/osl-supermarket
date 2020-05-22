@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 #include <pthread.h> 
+#include <stdio.h>
 #include <stdbool.h>
 #include <signal.h>
 #include "conc_lqueue.h"
@@ -20,6 +21,7 @@ typedef struct cashier_opt_s {
     // Various time units
     long time_per_prod;
     long *times_closed;
+    FILE *logfile;
 } cashier_opt_t;
 
 // ========== Customer Data Types ==========
@@ -62,6 +64,7 @@ typedef struct customer_opt_s {
     int *total_customers_served;
     int *total_products_bought;
     int requeue_count;
+    FILE *logfile;
 } customer_opt_t;
 
 typedef struct cashier_poll_opt_s {
@@ -89,7 +92,10 @@ void cashier_init(cashier_opt_t *c, int id,
                   bool *isopen,
                   pthread_mutex_t *state_mtx,
                   long time_per_prod,
-                  long *times_closed);
+                  long *times_closed,
+                  FILE *logfile
+);
+
 
 void customer_init(customer_opt_t *c, int id,
                    int *customer_count,
@@ -103,7 +109,8 @@ void customer_init(customer_opt_t *c, int id,
                    int cashier_arr_size,
                    conc_lqueue_t *outmsgqueue,
                    int *total_customers_served,
-                   int *total_products_bought
+                   int *total_products_bought,
+                   FILE *logfile
 );
 
 void cashier_destroy(cashier_opt_t *c);

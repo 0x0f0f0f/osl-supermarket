@@ -1,11 +1,10 @@
-[ ] Finire relazione
-[ ] analysis script
-[ ] Move strerror to strerror_r;   
-[ ] Synchronization primitives that goto labels on fail
-[ ] NUMERO INIZIALE DI CASSE APERTE DA CONFIG FILE
-[ ] NOME LOGFILE in file config
-[ ] rand invece che random
-
+[X] Finire relazione
+[X] Move strerror to strerror_r;   
+[X] Synchronization primitives that goto labels on fail
+[X] rand_r invece che random
+[X] NUMERO INIZIALE DI CASSE APERTE DA CONFIG FILE
+[X] NOME LOGFILE in file config
+[X] analysis script
 [X] Log stats
 [X] Fixa SIGINT che muore in supermarket
 [X] No leaks in supermarket

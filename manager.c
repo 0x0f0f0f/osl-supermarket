@@ -83,6 +83,7 @@ typedef struct conn_opt_s {
     long undercrowded_cash_treshold;
     long overcrowded_cash_treshold;
     int *running_arr;
+    int initial_open_cashiers;
 } conn_opt_t;
 
 void* conn_worker(void* arg) {
@@ -96,7 +97,9 @@ void* conn_worker(void* arg) {
     for(size_t i = 0; i < opt->num_cashiers; i++) {
         queue_size_arr[i] = -1;
     }
-    queue_size_arr[0] = 0;
+    for(int i = 0; i < opt->initial_open_cashiers; i++) {
+        queue_size_arr[i] = 0;
+    }
     if(pthread_sigmask(SIG_BLOCK, &opt->sigset, NULL) < 0)
         ERR_DIE("Masking signals in connection thread");
 
@@ -124,7 +127,7 @@ void* conn_worker(void* arg) {
                     LOG_DEBUG("Could not convert PID msg to int. Ignoring\n");
                     continue;
                 }
-                MTX_LOCK_EXT(opt->client_pids_mtx);
+                MTX_LOCK_GOTO(opt->client_pids_mtx, conn_worker_exit);
                 if (opt->client_pids[opt->id] > 0) {
                     LOG_DEBUG("PID %d already connected to worker %d", 
                         opt->client_pids[opt->id], opt->id);
@@ -144,7 +147,7 @@ void* conn_worker(void* arg) {
                 memset(msgbuf, 0, MSG_SIZE);
                 LOG_DEBUG("Worker %d successfully connected to process %d\n",
                     opt->id, opt->client_pids[opt->id]);
-                MTX_UNLOCK_EXT(opt->client_pids_mtx);
+                MTX_UNLOCK_GOTO(opt->client_pids_mtx, conn_worker_exit);
             }
             
         // ========== Handle customer exit requests ==========
@@ -282,7 +285,8 @@ void* conn_worker(void* arg) {
     } else if (nread == -1) {
         err = errno;
         if (err != EAGAIN && err != EWOULDBLOCK) {
-            ERR("Worker %d. Error receiving data: %s\n", opt->id, strerror(err));
+            char errs[1024] = {0}; strerror_r(err, errs, 1024);
+            ERR("Worker %d. Error receiving data: %s\n", opt->id, errs);
             goto conn_worker_exit;
         }
     } else if (errno != EAGAIN && errno != EWOULDBLOCK && nread == 0) {
@@ -309,7 +313,7 @@ conn_worker_exit:
 int main(int argc, char *const argv[]) {
     // Current thread
     int c_thr = 0;
-    int sock_fd, conn_fd, err = 0,
+    int sock_fd, conn_fd = -1, err = 0,
         manager_pool_size = 2;
     struct sockaddr_un addr;
     ini_t *config;
@@ -329,6 +333,7 @@ int main(int argc, char *const argv[]) {
     int num_cashiers = DEFAULT_NUM_CASHIERS;
     long undercrowded_cash_treshold = DEFAULT_UNDERCROWDED_CASH_TRESHOLD;
     long overcrowded_cash_treshold = DEFAULT_OVERCROWDED_CASH_TRESHOLD;
+    int initial_open_cashiers = DEFAULT_INITIAL_OPEN_CASHIERS;
 
     conn_opt_t *opt = NULL;
 
@@ -345,7 +350,7 @@ int main(int argc, char *const argv[]) {
 
     // ========== Read config file ==========
     int c;
-    strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX);
+    strncpy(config_path, DEFAULT_CONFIG_PATH, PATH_MAX - 1);
     
     while((c = getopt(argc, argv, "c:")) != -1) {
         switch(c) {
@@ -365,13 +370,14 @@ int main(int argc, char *const argv[]) {
 
     if(access(config_path, F_OK) == -1) {
         err = errno;
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);
         ERR_SET_GOTO(main_exit_1, err, "Could not open config file %s: %s",
-                     config_path, strerror(err));
+                     config_path, errs);
     }
 
 
     config = ini_load(config_path);
-    ini_sget(config, NULL, "socket_path", "%d", &socket_path);
+    ini_sget(config, NULL, "socket_path", "%s", &socket_path);
     if(strlen(socket_path) <= 0) {
         ERR("Invalid socket path\n");
         goto main_exit_1;
@@ -397,6 +403,14 @@ int main(int argc, char *const argv[]) {
         ini_free(config);
         goto main_exit_1;
     }
+    ini_sget(config, NULL, "initial_open_cashiers", "%d",
+             &initial_open_cashiers);
+    if(initial_open_cashiers <= 0 || initial_open_cashiers >= num_cashiers) {
+        ERR("initial_open_cashiers_ must be a positive integer smaller than the"
+             " total number of cashiers\n");
+        ini_free(config);
+        goto main_exit_1;
+    }
 
     ini_free(config);
 
@@ -412,11 +426,10 @@ int main(int argc, char *const argv[]) {
         conn_tid[i] = 0;
         client_pids[i] = 0;
         running_arr[i] = 0;
-        if((err = pthread_attr_init(&conn_attrs[i])) != 0)
-            ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
-        // if((err = pthread_attr_setdetachstate(&conn_attrs[i],
-                                              // PTHREAD_CREATE_DETACHED)) != 0)
-            // ERR_DIE("Initializing thread attributes: %s\n", strerror(err));
+        if((err = pthread_attr_init(&conn_attrs[i])) != 0) {
+            char errs[1024] = {0}; strerror_r(err, errs, 1024);
+            ERR_DIE("Initializing thread attributes: %s\n", errs);
+        }
     }
 
     // Initializing mutexes, conds and thread attributes
@@ -468,12 +481,13 @@ int main(int argc, char *const argv[]) {
                 pthread_join(conn_tid[i], NULL);
             }
         }
-        MTX_LOCK_DIE(count_mtx);
+        MTX_LOCK_GOTO(count_mtx, main_exit_2);
         while(*running_count >= manager_pool_size) {
             LOG_DEBUG("CONNECTION POOL FULL! WAITING!\n");
-            COND_WAIT_DIE(can_spawn_thread_event, count_mtx);
+            COND_WAIT_GOTO(can_spawn_thread_event, count_mtx,
+                           main_exit_2);
         }
-        MTX_UNLOCK_DIE(count_mtx);
+        MTX_UNLOCK_GOTO(count_mtx, main_exit_2);
         curr_accepted = false;
         LOG_DEBUG("Waiting for connection...\n");
         while(!should_quit && !curr_accepted) {
@@ -509,9 +523,14 @@ int main(int argc, char *const argv[]) {
         opt[c_thr].undercrowded_cash_treshold = undercrowded_cash_treshold;
         opt[c_thr].overcrowded_cash_treshold = overcrowded_cash_treshold;
         opt[c_thr].running_arr = running_arr;
+        opt[c_thr].initial_open_cashiers = initial_open_cashiers;
         err = pthread_create(&conn_tid[c_thr], &conn_attrs[c_thr],
                              conn_worker, opt);
-        if(err != 0) ERR_DIE("Spawning thread: %s", strerror(err));
+        if(err != 0) {
+            char errs[1024] = {0}; strerror_r(err, errs, 1024);
+            ERR_SET_GOTO(main_exit_1, err,
+                "Spawning thread: %s", errs);
+        } 
         c_thr = (c_thr + 1) % manager_pool_size;
     }
 

@@ -46,13 +46,14 @@ typedef struct msg_worker_opt_s {
     long time_per_prod;
     pthread_attr_t *cashier_attr_arr;
     long *cashier_times_closed_arr;
+    FILE *logfile;
 } msg_worker_opt_t;
 
 
 void* outmsg_worker(void* arg) {
     msg_worker_opt_t opt = *(msg_worker_opt_t *)arg;
     char *msgbuf = NULL;
-    ssize_t sent;
+    // ssize_t sent;
     int err;
 
     while(!should_quit) {
@@ -67,7 +68,8 @@ void* outmsg_worker(void* arg) {
             if (sendn(opt.sock_fd, msgbuf, MSG_SIZE, 0) == -1) {
                 err = errno;
                 free(msgbuf);
-                ERR("Error sending message: %s", strerror(err));
+                char errs[1024] = {0}; strerror_r(err, errs, 1024);
+                ERR("Error sending message: %s", errs);
                 goto outmsg_worker_exit;
             }
             free(msgbuf);
@@ -102,8 +104,10 @@ void* inmsg_worker(void* arg) {
             goto inmsg_worker_exit;
         } else if (received < 0) {
             err = errno;
-            if (err != EINTR)
-            LOG_CRITICAL("Error while reading socket: %s\n", strerror(err));
+            if (err != EINTR) {
+                char errs[1024] = {0}; strerror_r(err, errs, 1024);
+                LOG_CRITICAL("Error while reading socket: %s\n", errs);
+            }
             goto inmsg_worker_exit;
         } 
 
@@ -192,7 +196,8 @@ void* inmsg_worker(void* arg) {
                              &opt.cashier_isopen_arr[cash_id],
                              &opt.cashier_mtx_arr[cash_id],
                              opt.time_per_prod,
-                             &opt.cashier_times_closed_arr[cash_id]);
+                             &opt.cashier_times_closed_arr[cash_id],
+                             opt.logfile);
 
                 if(pthread_create(&opt.cashier_tid_arr[cash_id],
                                   &opt.cashier_attr_arr[cash_id], 
@@ -279,6 +284,8 @@ int main(int argc, char* const argv[]) {
     conc_lqueue_t *outmsgqueue = NULL, *inmsgqueue = NULL;
     struct sockaddr_un addr;
     struct sigaction act;
+    char socket_path[UNIX_MAX_PATH];
+    char log_path[PATH_MAX];
 
     ini_t *config;
     size_t sent, received;
@@ -316,6 +323,7 @@ int main(int argc, char* const argv[]) {
     int num_cashiers = DEFAULT_NUM_CASHIERS;
     size_t cust_cap = DEFAULT_CUST_CAP;
     size_t cust_batch = DEFAULT_CUST_BATCH;
+    int initial_open_cashiers = DEFAULT_INITIAL_OPEN_CASHIERS;
 
     int *total_customers_served = calloc(1, sizeof(int));
     int *total_products_bought = calloc(1, sizeof(int));
@@ -353,7 +361,7 @@ int main(int argc, char* const argv[]) {
     while((c = getopt(argc, argv, "c:")) != -1) {
         switch(c) {
             case 'c':
-                strncpy(config_path, optarg, PATH_MAX);
+                 strncpy(config_path, optarg, PATH_MAX - 1);
             break;
             case '?':
                 ERR("Unrecognized option: '-%c'\n", optopt);
@@ -364,11 +372,25 @@ int main(int argc, char* const argv[]) {
 
     if(access(config_path, F_OK) == -1) {
         err = errno;
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);
+
         ERR_SET_GOTO(main_exit_1, err, "Could not open config file %s: %s",
-                     config_path, strerror(err));
+                     config_path, errs);
     }
+    strncpy(socket_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH - 1);
+    strncpy(log_path, DEFAULT_LOG_PATH, PATH_MAX - 1);
 
     config = ini_load(config_path);
+    ini_sget(config, NULL, "socket_path", "%s", &socket_path);
+    if(strlen(socket_path) <= 0) {
+        ERR("Invalid socket path\n");
+        goto main_exit_1;
+    }
+    ini_sget(config, NULL, "log_path", "%s", &log_path);
+    if(strlen(log_path) <= 0) {
+        ERR("Invalid socket path\n");
+        goto main_exit_1;
+    }
     ini_sget(config, NULL, "max_conn_attempts", "%d", &max_conn_attempts); 
     if(max_conn_attempts <= 0) {
         ERR("max_conn_attempts must be a positive integer\n");
@@ -424,20 +446,32 @@ int main(int argc, char* const argv[]) {
         ini_free(config);
         goto main_exit_1;
     }
+    ini_sget(config, NULL, "initial_open_cashiers", "%d",
+             &initial_open_cashiers);
+    if(initial_open_cashiers <= 0 || initial_open_cashiers >= num_cashiers) {
+        ERR("initial_open_cashiers_ must be a positive integer smaller than the"
+             " total number of cashiers\n");
+        ini_free(config);
+        goto main_exit_1;
+    }
 
     ini_free(config);
+  
 
 // ========== Connect to server process  ==========
+
+    LOG_NOTICE("Connecting to server\n");
     
     // Prepare socket addr
     memset(&addr, 0, sizeof(addr));
+    strncpy(addr.sun_path, socket_path, UNIX_MAX_PATH);
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, DEFAULT_SOCK_PATH, UNIX_MAX_PATH);
     SYSCALL_SET_GOTO(sock_fd, socket(AF_UNIX, SOCK_STREAM, 0),
                      "creating socket\n", err, main_exit_1);
     while(connect(sock_fd, (struct sockaddr*) &addr, sizeof(addr)) < 0) {
         if (should_quit) goto main_exit_1;
-        LOG_CRITICAL("Error connecting to server: %s\n", strerror(errno));
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);
+        LOG_CRITICAL("Error connecting to server: %s\n", errs);
         if(conn_attempt_count >= max_conn_attempts) {
             ERR_SET_GOTO(main_exit_1, err, "Max number of attempts exceeded\n");
         }
@@ -478,6 +512,13 @@ int main(int argc, char* const argv[]) {
     free(msgbuf);
     LOG_NOTICE("Connection Established\n");
 
+    // Init logfile 
+    FILE *logfile = fopen(log_path, "w");
+    if (logfile == NULL) {
+        ERR("Error opening log file %s\n", log_path);
+        goto main_exit_1;
+    }
+
 
 // ========== Creating cashiers. Only 1 is open at startup  ==========
 
@@ -490,33 +531,38 @@ int main(int argc, char* const argv[]) {
 
     for(size_t i = 0; i < num_cashiers; i++) {
         pthread_attr_init(&cashier_attr_arr[i]);
-        if((err = pthread_mutex_init(&cashier_mtx_arr[i], NULL)) != 0)
-            ERR_SET_GOTO(main_exit_2, err, "Allocating Attr %s",
-            strerror(err));
-        if((err = pthread_attr_init(&cashier_attr_arr[i])) != 0)
-            ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s",
-            strerror(err));
+        if((err = pthread_mutex_init(&cashier_mtx_arr[i], NULL)) != 0) {
+            char errs[1024] = {0}; strerror_r(err, errs, 1024);
+            ERR_SET_GOTO(main_exit_2, err, "Allocating Attr %s\n", errs);
+        }
+        if((err = pthread_attr_init(&cashier_attr_arr[i])) != 0) {
+            char errs[1024] = {0}; strerror_r(err, errs, 1024);
+            ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s\n", errs);
+        }
 
         cashier_isopen_arr[i] = false;
     }
-    
 
-    // Spawn first cashier thread
-    cashier_isopen_arr[0] = true;
-    cashier_init(&cashier_opt_arr[0], 0,
-                 &cashier_isopen_arr[0],
-                 &cashier_mtx_arr[0],
-                 time_per_prod,
-                 &cashier_times_closed_arr[0]
-                 );
-    if(pthread_create(&cashier_tid_arr[0], &cashier_attr_arr[0], 
-                      cashier_worker, &cashier_opt_arr[0]) < 0)
-        ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
+    for(int i = 0; i < initial_open_cashiers; i++) {
+        // Spawn first cashier thread
+        cashier_isopen_arr[i] = true;
+        cashier_init(&cashier_opt_arr[i], i,
+                     &cashier_isopen_arr[i],
+                     &cashier_mtx_arr[i],
+                     time_per_prod,
+                     &cashier_times_closed_arr[i],
+                     logfile
+                     );
+        if(pthread_create(&cashier_tid_arr[i], &cashier_attr_arr[i], 
+                          cashier_worker, &cashier_opt_arr[i]) < 0)
+            ERR_SET_GOTO(main_exit_2, err, "Creating cashier worker\n");
+    }
 // ========== Creating first customers ==========
 
-    if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0)
-        ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", strerror(err));
-
+    if((err = pthread_mutex_init(&customer_count_mtx, NULL)) != 0) {
+        char errs[1024] = {0}; strerror_r(err, errs, 1024);
+        ERR_SET_GOTO(main_exit_2, err, "Allocating Mutex %s", errs);
+    }
     customer_tid_arr = calloc(cust_cap, sizeof(pthread_t));
     customer_attr_arr = calloc(cust_cap, sizeof(pthread_attr_t));
     customer_opt_arr = calloc(cust_cap, sizeof(customer_opt_t));
@@ -537,7 +583,9 @@ int main(int argc, char* const argv[]) {
                       num_cashiers,
                       outmsgqueue,
                       total_customers_served,
-                      total_products_bought);
+                      total_products_bought,
+                      logfile
+                      );
         
         if(pthread_create(&customer_tid_arr[i], &customer_attr_arr[i], 
                           customer_worker, &customer_opt_arr[i]) < 0)
@@ -565,7 +613,8 @@ int main(int argc, char* const argv[]) {
         cashier_tid_arr,
         time_per_prod,
         cashier_attr_arr,
-        cashier_times_closed_arr
+        cashier_times_closed_arr,
+        logfile
     };
 
     if(pthread_create(&outmsg_tid, &outmsg_attr,
@@ -648,7 +697,9 @@ int main(int argc, char* const argv[]) {
                               num_cashiers,
                               outmsgqueue,
                               total_customers_served,
-                              total_products_bought);
+                              total_products_bought,
+                              logfile
+                              );
                 if(pthread_create(&customer_tid_arr[i],
                                   &customer_attr_arr[i], 
                                   customer_worker,
@@ -686,8 +737,10 @@ int main(int argc, char* const argv[]) {
 
         // Print stats
         MTX_LOCK_DIE(&customer_count_mtx);
-        printf("total_customers_served %d \n", *total_customers_served);
-        printf("products_bought %d \n", *total_products_bought);
+        fprintf(logfile, 
+            "total_customers_served %d \n", *total_customers_served);
+        fprintf(logfile,
+            "products_bought %d \n", *total_products_bought);
         MTX_UNLOCK_DIE(&customer_count_mtx);
 
         free(customer_opt_arr);
@@ -706,7 +759,7 @@ int main(int argc, char* const argv[]) {
                 pthread_join(cashier_tid_arr[i], NULL);
                 pthread_attr_destroy(&cashier_attr_arr[i]);
             }
-            printf("cashier %d times_closed %ld\n", i, 
+            fprintf(logfile, "cashier %d times_closed %ld\n", i, 
                     cashier_times_closed_arr[i]);
         }
 
@@ -724,6 +777,7 @@ int main(int argc, char* const argv[]) {
         pthread_join(inmsg_tid, NULL);
         pthread_join(outmsg_tid, NULL);
     main_exit_2:
+        fclose(logfile);
         LOG_DEBUG("Closing message queue\n");
         conc_lqueue_close(outmsgqueue);
         conc_lqueue_close(inmsgqueue);

@@ -60,7 +60,8 @@ void lqueue_free(lqueue_t* q) {
 int lqueue_remove_index(lqueue_t* q, void** val, int ind) {
     if (q == NULL) return -2;
     if (ind >= q->count || ind < 0) {
-        LOG_CRITICAL("Index out of bounds\n");
+        LOG_CRITICAL("Index %d out of bounds, there are %d elements\n",
+            ind, q->count);
         return -1;
     } else if (ind == 0) {
         *val = (q->head)->val;
@@ -76,7 +77,6 @@ int lqueue_remove_index(lqueue_t* q, void** val, int ind) {
         *val = (cur->val);
         free(cur);
         q->count--;
-        return 0;
     }
     return 0;
 }
