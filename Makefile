@@ -56,7 +56,9 @@ clean:
 test1: debug
 	./test.sh examples/test1.ini 15 SIGQUIT
 test2: debug
-	./test.sh examples/test2.ini 25 SIGHUP
+	./manager -c examples/test2.ini &\
+	./supermarket -c examples/test2.ini &
+	sleep 25 && pkill -SIGHUP manager
 	./analisi.sh supermarket.log
 
 report:
